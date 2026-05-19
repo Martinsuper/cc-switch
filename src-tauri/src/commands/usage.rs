@@ -69,6 +69,19 @@ pub fn get_model_stats(
         .get_model_stats(start_date, end_date, app_type.as_deref())
 }
 
+/// 获取模型详细统计（含输入/输出/缓存细分）
+#[tauri::command]
+pub fn get_model_detail_stats(
+    state: State<'_, AppState>,
+    start_date: Option<i64>,
+    end_date: Option<i64>,
+    app_type: Option<String>,
+) -> Result<Vec<ModelDetailStats>, AppError> {
+    state
+        .db
+        .get_model_detail_stats(start_date, end_date, app_type.as_deref())
+}
+
 /// 获取请求日志列表
 #[tauri::command]
 pub fn get_request_logs(

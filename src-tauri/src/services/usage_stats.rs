@@ -96,6 +96,21 @@ pub struct ModelStats {
     pub avg_cost_per_request: String,
 }
 
+/// 模型详细统计（含输入/输出/缓存细分）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelDetailStats {
+    pub model: String,
+    pub request_count: u64,
+    pub total_tokens: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub total_cost: String,
+    pub cache_hit_rate: f64,
+}
+
 /// 请求日志过滤器
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1201,6 +1216,138 @@ impl Database {
                 total_tokens: row.get::<_, i64>(2)? as u64,
                 total_cost: format!("{total_cost:.6}"),
                 avg_cost_per_request: format!("{avg_cost:.6}"),
+            })
+        };
+
+        let rows = stmt.query_map(param_refs.as_slice(), row_mapper)?;
+
+        let mut stats = Vec::new();
+        for row in rows {
+            stats.push(row?);
+        }
+
+        Ok(stats)
+    }
+
+    /// 获取模型详细统计（含输入/输出/缓存细分）
+    pub fn get_model_detail_stats(
+        &self,
+        start_date: Option<i64>,
+        end_date: Option<i64>,
+        app_type: Option<&str>,
+    ) -> Result<Vec<ModelDetailStats>, AppError> {
+        let conn = lock_conn!(self.conn);
+
+        let mut detail_conditions = vec![effective_usage_log_filter("l")];
+        let mut detail_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some(start) = start_date {
+            detail_conditions.push("l.created_at >= ?".to_string());
+            detail_params.push(Box::new(start));
+        }
+        if let Some(end) = end_date {
+            detail_conditions.push("l.created_at <= ?".to_string());
+            detail_params.push(Box::new(end));
+        }
+        if let Some(at) = app_type {
+            detail_conditions.push("l.app_type = ?".to_string());
+            detail_params.push(Box::new(at.to_string()));
+        }
+        let detail_where = if detail_conditions.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", detail_conditions.join(" AND "))
+        };
+
+        let mut rollup_conditions = Vec::new();
+        let mut rollup_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        let rollup_bounds = compute_rollup_date_bounds(start_date, end_date)?;
+        push_rollup_date_filters(
+            &mut rollup_conditions,
+            &mut rollup_params,
+            "r.date",
+            &rollup_bounds,
+        );
+        if let Some(at) = app_type {
+            rollup_conditions.push("r.app_type = ?".to_string());
+            rollup_params.push(Box::new(at.to_string()));
+        }
+        let rollup_where = if rollup_conditions.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", rollup_conditions.join(" AND "))
+        };
+
+        let fresh_input_detail = fresh_input_sql("l");
+        let fresh_input_rollup = fresh_input_sql("r");
+        let sql = format!(
+            "SELECT
+                model,
+                SUM(request_count) as request_count,
+                SUM(total_tokens) as total_tokens,
+                SUM(input_tokens) as input_tokens,
+                SUM(output_tokens) as output_tokens,
+                SUM(cache_creation_tokens) as cache_creation_tokens,
+                SUM(cache_read_tokens) as cache_read_tokens,
+                SUM(total_cost) as total_cost
+            FROM (
+                SELECT l.model,
+                    COUNT(*) as request_count,
+                    COALESCE(SUM({fresh_input_detail} + l.output_tokens), 0) as total_tokens,
+                    COALESCE(SUM({fresh_input_detail}), 0) as input_tokens,
+                    COALESCE(SUM(l.output_tokens), 0) as output_tokens,
+                    COALESCE(SUM(l.cache_creation_tokens), 0) as cache_creation_tokens,
+                    COALESCE(SUM(l.cache_read_tokens), 0) as cache_read_tokens,
+                    COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost
+                FROM proxy_request_logs l
+                {detail_where}
+                GROUP BY l.model
+                UNION ALL
+                SELECT r.model,
+                    COALESCE(SUM(r.request_count), 0),
+                    COALESCE(SUM({fresh_input_rollup} + r.output_tokens), 0),
+                    COALESCE(SUM({fresh_input_rollup}), 0),
+                    COALESCE(SUM(r.output_tokens), 0),
+                    COALESCE(SUM(r.cache_creation_tokens), 0),
+                    COALESCE(SUM(r.cache_read_tokens), 0),
+                    COALESCE(SUM(CAST(r.total_cost_usd AS REAL)), 0)
+                FROM usage_daily_rollups r
+                {rollup_where}
+                GROUP BY r.model
+            )
+            GROUP BY model
+            ORDER BY total_tokens DESC"
+        );
+
+        let mut stmt = conn.prepare(&sql)?;
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = detail_params;
+        params.extend(rollup_params);
+        let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let row_mapper = |row: &rusqlite::Row| {
+            let request_count: i64 = row.get(1)?;
+            let total_tokens: i64 = row.get(2)?;
+            let input_tokens: i64 = row.get(3)?;
+            let output_tokens: i64 = row.get(4)?;
+            let cache_creation_tokens: i64 = row.get(5)?;
+            let cache_read_tokens: i64 = row.get(6)?;
+            let total_cost: f64 = row.get(7)?;
+
+            let cacheable_input = input_tokens + cache_creation_tokens + cache_read_tokens;
+            let cache_hit_rate = if cacheable_input > 0 {
+                cache_read_tokens as f64 / cacheable_input as f64
+            } else {
+                0.0
+            };
+
+            Ok(ModelDetailStats {
+                model: row.get(0)?,
+                request_count: request_count as u64,
+                total_tokens: total_tokens as u64,
+                input_tokens: input_tokens as u64,
+                output_tokens: output_tokens as u64,
+                cache_creation_tokens: cache_creation_tokens as u64,
+                cache_read_tokens: cache_read_tokens as u64,
+                total_cost: format!("{total_cost:.6}"),
+                cache_hit_rate,
             })
         };
 

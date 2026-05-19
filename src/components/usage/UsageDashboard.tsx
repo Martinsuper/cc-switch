@@ -5,6 +5,7 @@ import { UsageTrendChart } from "./UsageTrendChart";
 import { RequestLogTable } from "./RequestLogTable";
 import { ProviderStatsTable } from "./ProviderStatsTable";
 import { ModelStatsTable } from "./ModelStatsTable";
+import { ModelRankingPage } from "./ModelRankingPage";
 import {
   KNOWN_APP_TYPES,
   type AppTypeFilter,
@@ -17,6 +18,7 @@ import {
   Activity,
   RefreshCw,
   Coins,
+  Trophy,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useQueryClient } from "@tanstack/react-query";
@@ -155,6 +157,10 @@ export function UsageDashboard() {
                 <BarChart3 className="h-4 w-4" />
                 {t("usage.modelStats")}
               </TabsTrigger>
+              <TabsTrigger value="modelRanking" className="gap-2">
+                <Trophy className="h-4 w-4" />
+                {t("usage.modelRanking")}
+              </TabsTrigger>
             </TabsList>
           </div>
 
@@ -183,6 +189,14 @@ export function UsageDashboard() {
 
             <TabsContent value="models" className="mt-0">
               <ModelStatsTable
+                range={range}
+                appType={appType}
+                refreshIntervalMs={refreshIntervalMs}
+              />
+            </TabsContent>
+
+            <TabsContent value="modelRanking" className="mt-0">
+              <ModelRankingPage
                 range={range}
                 appType={appType}
                 refreshIntervalMs={refreshIntervalMs}

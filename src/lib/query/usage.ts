@@ -1,7 +1,11 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { usageApi } from "@/lib/api/usage";
 import { resolveUsageRange } from "@/lib/usageRange";
-import type { LogFilters, UsageRangeSelection } from "@/types/usage";
+import type {
+  LogFilters,
+  ModelDetailStats,
+  UsageRangeSelection,
+} from "@/types/usage";
 
 const DEFAULT_REFETCH_INTERVAL_MS = 30000;
 
@@ -94,6 +98,20 @@ export const usageKeys = {
     [
       ...usageKeys.all,
       "model-stats",
+      preset,
+      customStartDate ?? 0,
+      customEndDate ?? 0,
+      appType ?? "all",
+    ] as const,
+  modelDetailStats: (
+    preset: UsageRangeSelection["preset"],
+    customStartDate: number | undefined,
+    customEndDate: number | undefined,
+    appType?: string,
+  ) =>
+    [
+      ...usageKeys.all,
+      "model-detail-stats",
       preset,
       customStartDate ?? 0,
       customEndDate ?? 0,
@@ -224,6 +242,28 @@ export function useModelStats(
     queryFn: () => {
       const { startDate, endDate } = resolveUsageRange(range);
       return usageApi.getModelStats(startDate, endDate, effectiveAppType);
+    },
+    refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
+  });
+}
+
+export function useModelDetailStats(
+  range: UsageRangeSelection,
+  appType?: string,
+  options?: UsageQueryOptions,
+) {
+  const effectiveAppType = appType === "all" ? undefined : appType;
+  return useQuery({
+    queryKey: usageKeys.modelDetailStats(
+      range.preset,
+      range.customStartDate,
+      range.customEndDate,
+      appType,
+    ),
+    queryFn: () => {
+      const { startDate, endDate } = resolveUsageRange(range);
+      return usageApi.getModelDetailStats(startDate, endDate, effectiveAppType);
     },
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
