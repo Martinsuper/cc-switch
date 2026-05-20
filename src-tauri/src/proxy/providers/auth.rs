@@ -128,6 +128,15 @@ pub enum AuthStrategy {
     ///
     /// 使用动态获取的 OpenAI access_token（通过 Device Code 流程获取）
     CodexOAuth,
+
+    /// Joycode 认证方式（京东内部 Joycode API）
+    ///
+    /// - Header: `ptKey: <access_token>`
+    /// - Header: `originator: joycode_cli`
+    /// - Header: `clientVersion: 0.1.16`
+    ///
+    /// 从 `~/.joycode/auth.json` 读取 access_token（mtime 缓存自动失效）
+    JoycodeAuth,
 }
 
 #[cfg(test)]
@@ -244,6 +253,7 @@ mod tests {
             AuthStrategy::GoogleOAuth,
             AuthStrategy::GitHubCopilot,
             AuthStrategy::CodexOAuth,
+            AuthStrategy::JoycodeAuth,
         ];
 
         for (i, s1) in strategies.iter().enumerate() {

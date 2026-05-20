@@ -59,7 +59,8 @@ export interface ProviderPreset {
   // 供应商类型标识（用于特殊供应商检测）
   // - "github_copilot": GitHub Copilot 供应商（需要 OAuth 认证）
   // - "codex_oauth": OpenAI Codex via ChatGPT Plus/Pro 反代（需要 OAuth 认证）
-  providerType?: "github_copilot" | "codex_oauth";
+  // - "joycode": Joycode 京东内部 API（需要 joycode-cli 登录态）
+  providerType?: "github_copilot" | "codex_oauth" | "joycode";
 
   // 是否需要 OAuth 认证（而非 API Key）
   requiresOAuth?: boolean;
@@ -1136,5 +1137,30 @@ export const providerPresets: ProviderPreset[] = [
     },
     icon: "aws",
     iconColor: "#FF9900",
+  },
+  {
+    name: "Joycode (JD Internal)",
+    nameKey: "providers.joycode.name",
+    websiteUrl: "https://joycode.jd.com",
+    settingsConfig: {
+      env: {
+        ANTHROPIC_BASE_URL: "https://joycode-api-inner.jd.com",
+        JOYCODE_AUTH_PATH: "~/.joycode/auth.json",
+        ANTHROPIC_MODEL: "claude-opus-4-7",
+      },
+    },
+    category: "cn_official",
+    providerType: "joycode",
+    apiFormat: "anthropic",
+    icon: "joycode",
+    iconColor: "#E2383A",
+    templateValues: {
+      JOYCODE_AUTH_PATH: {
+        label: "Auth Config Path",
+        placeholder: "~/.joycode/auth.json",
+        defaultValue: "~/.joycode/auth.json",
+        editorValue: "~/.joycode/auth.json",
+      },
+    },
   },
 ];

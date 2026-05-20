@@ -220,7 +220,7 @@ impl ProxyService {
         env: &Map<String, Value>,
         model_key: &'static str,
         name_key: &'static str,
-        takeover_model: &'static str,
+        _takeover_model: &'static str,
         supports_one_m: bool,
         upstream_model: Option<&str>,
     ) {
@@ -228,7 +228,10 @@ impl ProxyService {
             return;
         };
 
-        let mut client_model = takeover_model.to_string();
+        // 直接写入上游真实模型名（如 doubao-seed-2.0-pro），
+        // 而非 Claude 角色别名（如 claude-sonnet-4-6），
+        // 使 Claude Code /model 命令可直接选择上游模型。
+        let mut client_model = Self::strip_claude_one_m_marker(upstream_model);
         if supports_one_m && Self::has_claude_one_m_marker(upstream_model) {
             client_model.push_str(CLAUDE_ONE_M_MARKER_FOR_CLIENT);
         }
@@ -2627,8 +2630,8 @@ model = "gpt-5.1-codex"
             live_env
                 .get("ANTHROPIC_DEFAULT_HAIKU_MODEL")
                 .and_then(|v| v.as_str()),
-            Some("claude-haiku-4-5"),
-            "takeover mode should expose a stable Haiku role model"
+            Some("deepseek-v4-flash"),
+            "takeover mode should expose the upstream Haiku model name for /model switching"
         );
         assert_eq!(
             live_env
@@ -2641,8 +2644,8 @@ model = "gpt-5.1-codex"
             live_env
                 .get("ANTHROPIC_DEFAULT_SONNET_MODEL")
                 .and_then(|v| v.as_str()),
-            Some("claude-sonnet-4-6[1M]"),
-            "Sonnet role should carry the local 1M declaration for Claude Code"
+            Some("deepseek-v4-pro[1M]"),
+            "Sonnet role should carry the upstream model name with 1M declaration"
         );
         assert_eq!(
             live_env
@@ -2655,8 +2658,8 @@ model = "gpt-5.1-codex"
             live_env
                 .get("ANTHROPIC_DEFAULT_OPUS_MODEL")
                 .and_then(|v| v.as_str()),
-            Some("claude-opus-4-7[1M]"),
-            "Opus role should preserve the current provider 1M capability marker"
+            Some("deepseek-v4-ultra[1M]"),
+            "Opus role should use upstream model name with 1M capability marker"
         );
         assert_eq!(
             live_env

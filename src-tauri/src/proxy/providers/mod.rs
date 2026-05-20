@@ -19,6 +19,7 @@ pub mod codex_oauth_auth;
 pub mod copilot_auth;
 pub mod copilot_model_map;
 mod gemini;
+pub mod joycode_auth;
 pub(crate) mod gemini_schema;
 pub mod gemini_shadow;
 pub mod models;
@@ -69,6 +70,8 @@ pub enum ProviderType {
     GitHubCopilot,
     /// OpenAI Codex (ChatGPT Plus/Pro OAuth，需要 Anthropic ↔ Responses API 转换)
     CodexOAuth,
+    /// Joycode（京东内部 API，ptKey 鉴权，网关 SSE 双层包装）
+    Joycode,
 }
 
 impl ProviderType {
@@ -83,6 +86,7 @@ impl ProviderType {
             ProviderType::GitHubCopilot => true,
             ProviderType::CodexOAuth => true,
             ProviderType::OpenRouter => false,
+            ProviderType::Joycode => false,
             _ => false,
         }
     }
@@ -99,6 +103,7 @@ impl ProviderType {
             ProviderType::OpenRouter => "https://openrouter.ai/api",
             ProviderType::GitHubCopilot => "https://api.githubcopilot.com",
             ProviderType::CodexOAuth => "https://chatgpt.com/backend-api/codex",
+            ProviderType::Joycode => "https://joycode-api-inner.jd.com",
         }
     }
 
@@ -125,6 +130,10 @@ impl ProviderType {
                     if meta.provider_type.as_deref() == Some("codex_oauth") {
                         return ProviderType::CodexOAuth;
                     }
+                    // 检测 Joycode Provider
+                    if meta.provider_type.as_deref() == Some("joycode") {
+                        return ProviderType::Joycode;
+                    }
                 }
 
                 // 检测 base_url 是否为 GitHub Copilot
@@ -132,6 +141,10 @@ impl ProviderType {
                 if let Ok(base_url) = adapter.extract_base_url(provider) {
                     if base_url.contains("githubcopilot.com") {
                         return ProviderType::GitHubCopilot;
+                    }
+                    // 检测是否为 Joycode
+                    if base_url.contains("joycode-api-inner") {
+                        return ProviderType::Joycode;
                     }
                     // 检测是否为 OpenRouter
                     if base_url.contains("openrouter.ai") {
@@ -196,6 +209,7 @@ impl ProviderType {
             ProviderType::OpenRouter => "openrouter",
             ProviderType::GitHubCopilot => "github_copilot",
             ProviderType::CodexOAuth => "codex_oauth",
+            ProviderType::Joycode => "joycode",
         }
     }
 }
@@ -221,6 +235,7 @@ impl std::str::FromStr for ProviderType {
                 Ok(ProviderType::GitHubCopilot)
             }
             "codex_oauth" | "codex-oauth" | "codexoauth" => Ok(ProviderType::CodexOAuth),
+            "joycode" => Ok(ProviderType::Joycode),
             _ => Err(format!("Invalid provider type: {s}")),
         }
     }
@@ -247,7 +262,8 @@ pub fn get_adapter_for_provider_type(provider_type: &ProviderType) -> Box<dyn Pr
         | ProviderType::ClaudeAuth
         | ProviderType::OpenRouter
         | ProviderType::GitHubCopilot
-        | ProviderType::CodexOAuth => Box::new(ClaudeAdapter::new()),
+        | ProviderType::CodexOAuth
+        | ProviderType::Joycode => Box::new(ClaudeAdapter::new()),
         ProviderType::Codex => Box::new(CodexAdapter::new()),
         ProviderType::Gemini | ProviderType::GeminiCli => Box::new(GeminiAdapter::new()),
     }

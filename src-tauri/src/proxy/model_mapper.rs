@@ -53,6 +53,11 @@ impl ModelMapping {
 
     /// 根据原始模型名称获取映射后的模型
     pub fn map_model(&self, original_model: &str) -> String {
+        // 如果原始模型名已经是配置中的上游模型名，直接透传
+        if self.is_upstream_model(original_model) {
+            return original_model.to_string();
+        }
+
         let model_lower = original_model.to_lowercase();
 
         // 1. 按模型类型匹配
@@ -79,6 +84,20 @@ impl ModelMapping {
 
         // 3. 无映射，保持原样
         original_model.to_string()
+    }
+
+    /// 检查模型名是否已经是配置中的上游模型名
+    fn is_upstream_model(&self, model: &str) -> bool {
+        let model_lower = model.to_lowercase();
+        for m in [&self.haiku_model, &self.sonnet_model, &self.opus_model, &self.default_model]
+            .into_iter()
+            .flatten()
+        {
+            if m.to_lowercase() == model_lower {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -136,6 +155,47 @@ pub fn strip_one_m_suffix_for_upstream_from_body(mut body: Value) -> Value {
     if stripped != model {
         log::debug!("[ModelMapper] 去除本地 1M 标记: {model} → {stripped}");
         body["model"] = serde_json::json!(stripped);
+    }
+    body
+}
+
+/// Joycode 上游模型名映射
+///
+/// Joycode 上游使用"展示名"风格（如 `Claude-Opus-4.7`、`GLM-5`），
+/// 而客户端使用小写连字符格式（如 `claude-opus-4-7`、`glm-5`）。
+const JOYCODE_MODEL_MAP: &[(&str, &str)] = &[
+    ("claude-opus-4-7", "Claude-Opus-4.7"),
+    ("claude-opus-4-6", "Claude-Opus-4.6"),
+    ("claude-sonnet-4-6", "Claude-Sonnet-4.6"),
+    ("claude-haiku-4-5", "Claude-Haiku-4.5"),
+    ("glm-5", "GLM-5"),
+    ("glm-5.1", "GLM-5.1"),
+    ("gpt-5.3-codex", "GPT-5.3-codex"),
+    ("kimi-k2.6", "Kimi-K2.6"),
+    ("minimax-m2.7", "MiniMax-M2.7"),
+    ("doubao-seed-2.0-pro", "Doubao-Seed-2.0-pro"),
+    ("gemini-3-pro-preview", "Gemini-3-Pro-Preview"),
+    ("joyai-code", "JoyAI-Code"),
+];
+
+/// 映射 Joycode 模型名为上游格式
+pub fn map_joycode_model_name(model: &str) -> &str {
+    JOYCODE_MODEL_MAP
+        .iter()
+        .find(|(k, _)| *k == model)
+        .map(|(_, v)| *v)
+        .unwrap_or(model)
+}
+
+/// 对请求体应用 Joycode 模型名映射
+pub fn apply_joycode_model_mapping(mut body: Value) -> Value {
+    let Some(model) = body.get("model").and_then(Value::as_str) else {
+        return body;
+    };
+    let mapped = map_joycode_model_name(model);
+    if mapped != model {
+        log::debug!("[Joycode] 模型名映射: {model} → {mapped}");
+        body["model"] = serde_json::json!(mapped);
     }
     body
 }

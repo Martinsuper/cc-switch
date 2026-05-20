@@ -2633,5 +2633,12 @@
     "expiredHint": "{{tool}}コマンドを実行してログインを更新してください",
     "queryFailed": "クエリに失敗しました",
     "refresh": "更新"
+  },
+  "providers": {
+    "joycode": {
+      "name": "Joycode（JD内部）",
+      "authPathLabel": "認証設定パス",
+      "authPathHint": "joycode-cli ログイン後に生成される auth.json ファイルのパス"
+    }
   }
 }
