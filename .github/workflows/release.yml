@@ -190,6 +190,26 @@ jobs:
 
           rm -f "$CERT_PATH"
 
+      - name: Disable updater signing when key is missing
+        if: env.TAURI_SIGNING_ENABLED != 'true'
+        shell: bash
+        run: |
+          echo "⚠️ Removing updater pubkey from tauri.conf.json since signing key is not configured"
+          node -e "
+          const fs = require('fs');
+          const p = 'src-tauri/tauri.conf.json';
+          const cfg = JSON.parse(fs.readFileSync(p, 'utf8'));
+          if (cfg.plugins && cfg.plugins.updater) {
+            delete cfg.plugins.updater.pubkey;
+            delete cfg.plugins.updater.endpoints;
+          }
+          if (cfg.bundle) {
+            cfg.bundle.createUpdaterArtifacts = false;
+          }
+          fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
+          console.log('✅ Updater config removed from tauri.conf.json');
+          "
+
       - name: Build Tauri App (macOS)
         if: runner.os == 'macOS'
         shell: bash
