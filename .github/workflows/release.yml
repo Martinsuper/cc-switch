@@ -206,13 +206,6 @@ jobs:
           if (cfg.bundle) {
             cfg.bundle.createUpdaterArtifacts = false;
           }
-          // Use ad-hoc signing on macOS when no Apple certificate is configured
-          if (process.env.RUNNER_OS === 'macOS') {
-            if (!cfg.bundle) cfg.bundle = {};
-            if (!cfg.bundle.macOS) cfg.bundle.macOS = {};
-            cfg.bundle.macOS.signingIdentity = '-';
-            console.log('✅ Set macOS signingIdentity to - (ad-hoc signing)');
-          }
           fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
           console.log('✅ Updater config removed from tauri.conf.json');
           "
@@ -228,11 +221,10 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
-          if [ "${APPLE_SIGNING_ENABLED:-false}" = "true" ]; then
-            BUILD_ARGS="--target universal-apple-darwin"
-          else
-            echo "⚠️ Apple signing not configured — building without code signing"
-            BUILD_ARGS="--target universal-apple-darwin"
+          BUILD_ARGS="--target universal-apple-darwin"
+          if [ "${APPLE_SIGNING_ENABLED:-false}" != "true" ]; then
+            echo "⚠️ Apple signing not configured — using ad-hoc signing"
+            export APPLE_SIGNING_IDENTITY="-"
           fi
           max_attempts=3
           for attempt in $(seq 1 "$max_attempts"); do
