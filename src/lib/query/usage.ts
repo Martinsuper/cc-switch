@@ -3,7 +3,6 @@ import { usageApi } from "@/lib/api/usage";
 import { resolveUsageRange } from "@/lib/usageRange";
 import type {
   LogFilters,
-  ModelDetailStats,
   UsageRangeSelection,
 } from "@/types/usage";
 

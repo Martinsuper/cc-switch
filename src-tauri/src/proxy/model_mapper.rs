@@ -89,9 +89,14 @@ impl ModelMapping {
     /// 检查模型名是否已经是配置中的上游模型名
     fn is_upstream_model(&self, model: &str) -> bool {
         let model_lower = model.to_lowercase();
-        for m in [&self.haiku_model, &self.sonnet_model, &self.opus_model, &self.default_model]
-            .into_iter()
-            .flatten()
+        for m in [
+            &self.haiku_model,
+            &self.sonnet_model,
+            &self.opus_model,
+            &self.default_model,
+        ]
+        .into_iter()
+        .flatten()
         {
             if m.to_lowercase() == model_lower {
                 return true;

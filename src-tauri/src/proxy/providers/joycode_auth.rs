@@ -56,15 +56,13 @@ pub fn read_joycode_auth(auth_path: Option<&Path>) -> Result<(String, String), P
         .unwrap_or_else(default_auth_path);
 
     // 获取文件 mtime
-    let st = std::fs::metadata(&path).map_err(|err| {
-        ProxyError::UpstreamError {
-            status: 502,
-            body: Some(format!(
-                "读取 auth.json 失败 ({})): {}. 请先运行 `joycode-cli login`",
-                path.display(),
-                err
-            )),
-        }
+    let st = std::fs::metadata(&path).map_err(|err| ProxyError::UpstreamError {
+        status: 502,
+        body: Some(format!(
+            "读取 auth.json 失败 ({})): {}. 请先运行 `joycode-cli login`",
+            path.display(),
+            err
+        )),
     })?;
     let mtime = st
         .modified()
@@ -84,18 +82,15 @@ pub fn read_joycode_auth(auth_path: Option<&Path>) -> Result<(String, String), P
     drop(cache);
 
     // 读取并解析 auth.json
-    let raw = std::fs::read_to_string(&path).map_err(|err| {
-        ProxyError::UpstreamError {
-            status: 502,
-            body: Some(format!("读取 auth.json 失败: {}", err)),
-        }
+    let raw = std::fs::read_to_string(&path).map_err(|err| ProxyError::UpstreamError {
+        status: 502,
+        body: Some(format!("读取 auth.json 失败: {}", err)),
     })?;
-    let parsed: JoycodeAuthFile = serde_json::from_str(&raw).map_err(|err| {
-        ProxyError::UpstreamError {
+    let parsed: JoycodeAuthFile =
+        serde_json::from_str(&raw).map_err(|err| ProxyError::UpstreamError {
             status: 502,
             body: Some(format!("auth.json 不是合法 JSON: {}", err)),
-        }
-    })?;
+        })?;
 
     if parsed.tokens.access_token.is_empty() || parsed.base_url.is_empty() {
         return Err(ProxyError::AuthError(
@@ -120,7 +115,9 @@ pub fn read_joycode_auth(auth_path: Option<&Path>) -> Result<(String, String), P
 }
 
 /// 从 Provider 的 settings_config 中获取 JOYCODE_AUTH_PATH
-pub fn get_joycode_auth_path_from_provider(provider: &crate::provider::Provider) -> Option<PathBuf> {
+pub fn get_joycode_auth_path_from_provider(
+    provider: &crate::provider::Provider,
+) -> Option<PathBuf> {
     provider
         .settings_config
         .pointer("/env/JOYCODE_AUTH_PATH")
@@ -157,7 +154,11 @@ mod tests {
     #[test]
     fn test_read_joycode_auth_valid() {
         let dir = tempfile::tempdir().unwrap();
-        let path = create_test_auth_file(dir.path(), "test-token-123", "https://joycode-api-inner.jd.com");
+        let path = create_test_auth_file(
+            dir.path(),
+            "test-token-123",
+            "https://joycode-api-inner.jd.com",
+        );
 
         let (token, base_url) = read_joycode_auth(Some(&path)).unwrap();
         assert_eq!(token, "test-token-123");
