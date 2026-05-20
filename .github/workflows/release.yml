@@ -214,17 +214,17 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         timeout-minutes: 60
-        env:
-          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
           BUILD_ARGS="--target universal-apple-darwin"
           if [ "${APPLE_SIGNING_ENABLED:-false}" != "true" ]; then
-            echo "⚠️ Apple signing not configured — using ad-hoc signing"
+            echo "⚠️ Apple signing not configured — using ad-hoc signing, skipping notarization env vars"
             export APPLE_SIGNING_IDENTITY="-"
+          else
+            export APPLE_SIGNING_IDENTITY="${{ env.APPLE_SIGNING_IDENTITY }}"
+            export APPLE_ID="${{ secrets.APPLE_ID }}"
+            export APPLE_PASSWORD="${{ secrets.APPLE_PASSWORD }}"
+            export APPLE_TEAM_ID="${{ secrets.APPLE_TEAM_ID }}"
           fi
           max_attempts=3
           for attempt in $(seq 1 "$max_attempts"); do
