@@ -1,10 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { usageApi } from "@/lib/api/usage";
 import { resolveUsageRange } from "@/lib/usageRange";
-import type {
-  LogFilters,
-  UsageRangeSelection,
-} from "@/types/usage";
+import type { LogFilters, UsageRangeSelection } from "@/types/usage";
 
 const DEFAULT_REFETCH_INTERVAL_MS = 30000;
 

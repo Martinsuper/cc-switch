@@ -61,14 +61,14 @@ pub fn parse_joycode_sse_block(block: &str) -> Option<ParsedJoycodeBlock> {
         let l = l.trim();
 
         // 内层可能是 "event: xxx" 或 "data: {...}" 或 "[DONE]"
-        if l.starts_with("event: ") {
-            event_name = Some(l[7..].trim().to_string());
-        } else if l.starts_with("event:") {
-            event_name = Some(l[6..].trim().to_string());
-        } else if l.starts_with("data: ") {
-            data_lines.push(&l[6..]);
-        } else if l.starts_with("data:") {
-            data_lines.push(&l[5..]);
+        if let Some(stripped) = l.strip_prefix("event: ") {
+            event_name = Some(stripped.trim().to_string());
+        } else if let Some(stripped) = l.strip_prefix("event:") {
+            event_name = Some(stripped.trim().to_string());
+        } else if let Some(stripped) = l.strip_prefix("data: ") {
+            data_lines.push(stripped);
+        } else if let Some(stripped) = l.strip_prefix("data:") {
+            data_lines.push(stripped);
         } else if l == "[DONE]" {
             return Some(ParsedJoycodeBlock::Done);
         }

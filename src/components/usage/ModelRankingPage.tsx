@@ -95,9 +95,7 @@ export function ModelRankingPage({
       className="space-y-8"
     >
       {/* Hero summary cards */}
-      {summary && (
-        <HeroSummary summary={summary} lang={lang} />
-      )}
+      {summary && <HeroSummary summary={summary} lang={lang} />}
 
       {/* Model ranking table */}
       <div className="space-y-3">
@@ -152,12 +150,18 @@ function HeroSummary({ summary, lang }: HeroSummaryProps) {
     {
       label: t("usage.freshInput", "输入 Token"),
       value: formatTokensShort(summary.inputTokens, lang),
-      sub: t("usage.cacheWrite", "缓存写入") + " " + formatTokensShort(summary.cacheCreationTokens, lang),
+      sub:
+        t("usage.cacheWrite", "缓存写入") +
+        " " +
+        formatTokensShort(summary.cacheCreationTokens, lang),
     },
     {
       label: t("usage.output", "输出 Token"),
       value: formatTokensShort(summary.outputTokens, lang),
-      sub: t("usage.cacheRead", "缓存读取") + " " + formatTokensShort(summary.cacheReadTokens, lang),
+      sub:
+        t("usage.cacheRead", "缓存读取") +
+        " " +
+        formatTokensShort(summary.cacheReadTokens, lang),
     },
     {
       label: t("usage.totalRequests", "请求数"),
@@ -203,7 +207,11 @@ interface ModelRankingTableProps {
   lang: string;
 }
 
-function ModelRankingTable({ stats, totalTokens, lang }: ModelRankingTableProps) {
+function ModelRankingTable({
+  stats,
+  totalTokens,
+  lang,
+}: ModelRankingTableProps) {
   const { t } = useTranslation();
 
   return (
