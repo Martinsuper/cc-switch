@@ -179,9 +179,10 @@ async fn handle_messages_for_app(
         .to_string();
     let response = result.response;
 
-    // 检查是否需要格式转换（OpenRouter 等中转服务）
+    // 检查是否需要格式转换（OpenRouter 等中转服务，或 Joycode 国内模型运行时 api_format=openai_chat）
     let adapter = get_adapter(&app_type);
-    let needs_transform = adapter.needs_transform(&ctx.provider);
+    let needs_transform = adapter.needs_transform(&ctx.provider)
+        || super::providers::claude_api_format_needs_transform(&api_format);
 
     // Claude 特有：格式转换处理
     if needs_transform {
@@ -277,6 +278,7 @@ async fn handle_claude_transform(
     if use_streaming {
         // 根据 api_format 选择流式转换器
         let stream = response.bytes_stream();
+        let is_joycode = super::response_processor::is_joycode_provider(&ctx.provider);
         let sse_stream: Box<
             dyn futures::Stream<Item = Result<Bytes, std::io::Error>> + Send + Unpin,
         > = if api_format == "openai_responses" {
@@ -289,6 +291,10 @@ async fn handle_claude_transform(
                 Some(ctx.session_id.clone()),
                 tool_schema_hints.clone(),
             )))
+        } else if is_joycode {
+            // Joycode 网关双层 data: 包装需要先重打包为标准 SSE，再转 Anthropic 格式
+            let repackaged = super::joycode_sse::create_joycode_repackaged_stream(stream);
+            Box::new(Box::pin(create_anthropic_sse_stream(repackaged)))
         } else {
             Box::new(Box::pin(create_anthropic_sse_stream(stream)))
         };
@@ -347,6 +353,7 @@ async fn handle_claude_transform(
             usage_collector,
             timeout_config,
             connection_guard,
+            false,
         );
 
         let mut headers = axum::http::HeaderMap::new();
@@ -372,6 +379,16 @@ async fn handle_claude_transform(
         };
     let (mut response_headers, _status, body_bytes) =
         read_decoded_body(response, ctx.tag, body_timeout).await?;
+
+    // Joycode 网关业务错误检测：HTTP 200 + {"code":401,...}
+    let is_joycode = super::response_processor::is_joycode_provider(&ctx.provider);
+    if is_joycode && status.is_success() {
+        let check_str = String::from_utf8_lossy(&body_bytes);
+        if let Some(err) = super::joycode_sse::detect_joycode_business_error(&check_str) {
+            log::warn!("[{}] Joycode 网关非流式业务错误: {:?}", ctx.tag, err);
+            return Err(err);
+        }
+    }
 
     let body_str = String::from_utf8_lossy(&body_bytes);
 
@@ -751,6 +768,7 @@ async fn handle_codex_chat_to_responses_transform(
             usage_collector,
             ctx.streaming_timeout_config(),
             connection_guard,
+            false,
         );
 
         let mut headers = axum::http::HeaderMap::new();

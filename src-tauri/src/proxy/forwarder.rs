@@ -43,6 +43,8 @@ pub struct ForwardResult {
     pub(crate) connection_guard: Option<ActiveConnectionGuard>,
 }
 
+impl ForwardResult {}
+
 pub struct ForwardError {
     pub error: ProxyError,
     pub provider: Option<Provider>,
@@ -940,6 +942,14 @@ impl RequestForwarder {
             == Some("github_copilot")
             || base_url.contains("githubcopilot.com");
 
+        // Joycode Provider（京东内部 API）
+        let is_joycode = provider
+            .meta
+            .as_ref()
+            .and_then(|m| m.provider_type.as_deref())
+            == Some("joycode")
+            || base_url.contains("joycode-api-inner");
+
         // 应用模型映射（独立于格式转换）
         // Claude Desktop proxy 模式必须先把 Desktop 可见的 claude-* route
         // 映射成真实上游模型名，并且未知 route 要直接报错，不能使用默认模型兜底。
@@ -1097,10 +1107,24 @@ impl RequestForwarder {
             }
         }
         let resolved_claude_api_format = if adapter.name() == "Claude" {
-            Some(
-                self.resolve_claude_api_format(provider, &mapped_body, is_copilot)
-                    .await,
-            )
+            // Joycode Provider：国内模型强制使用 openai_chat 格式
+            if is_joycode {
+                let model = mapped_body
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if is_joycode_openai_model(model) {
+                    Some("openai_chat".to_string())
+                } else {
+                    // 海外 Claude/GPT/Gemini 等走 Anthropic 透传
+                    Some("anthropic".to_string())
+                }
+            } else {
+                Some(
+                    self.resolve_claude_api_format(provider, &mapped_body, is_copilot)
+                        .await,
+                )
+            }
         } else {
             None
         };
@@ -1112,6 +1136,26 @@ impl RequestForwarder {
             && super::providers::should_convert_codex_responses_to_chat(provider, endpoint);
         let (effective_endpoint, passthrough_query) = if codex_responses_to_chat {
             rewrite_codex_responses_endpoint_to_chat(endpoint)
+        } else if is_joycode && needs_transform && adapter.name() == "Claude" {
+            // Joycode 国内模型：端点重写为 /api/saas/openai/v1/chat/completions
+            let (_path, query) = split_endpoint_and_query(endpoint);
+            let passthrough_query = query.map(ToString::to_string);
+            let target = "/api/saas/openai/v1/chat/completions";
+            let rewritten = match passthrough_query.as_deref() {
+                Some(q) if !q.is_empty() => format!("{target}?{q}"),
+                _ => target.to_string(),
+            };
+            (rewritten, passthrough_query)
+        } else if is_joycode && !needs_transform {
+            // Joycode 海外模型：端点重写为 /api/saas/anthropic/v1/messages
+            let (_path, query) = split_endpoint_and_query(endpoint);
+            let passthrough_query = query.map(ToString::to_string);
+            let target = "/api/saas/anthropic/v1/messages";
+            let rewritten = match passthrough_query.as_deref() {
+                Some(q) if !q.is_empty() => format!("{target}?{q}"),
+                _ => target.to_string(),
+            };
+            (rewritten, passthrough_query)
         } else if needs_transform && adapter.name() == "Claude" {
             let api_format = resolved_claude_api_format
                 .as_deref()
@@ -1170,6 +1214,13 @@ impl RequestForwarder {
         // 过滤私有参数（以 `_` 开头的字段），防止内部信息泄露到上游
         // 默认使用空白名单，过滤所有 _ 前缀字段
         let filtered_body = prepare_upstream_request_body(request_body);
+
+        // Joycode 模型名映射：客户端格式 → 上游展示名格式
+        let filtered_body = if is_joycode {
+            super::model_mapper::apply_joycode_model_mapping(filtered_body)
+        } else {
+            filtered_body
+        };
         log_prompt_cache_trace(
             app_type,
             provider,
@@ -2047,6 +2098,15 @@ fn strip_beta_query(query: Option<&str>) -> Option<String> {
 
 fn is_claude_messages_path(path: &str) -> bool {
     matches!(path, "/v1/messages" | "/claude/v1/messages")
+}
+
+/// Joycode 国内模型：需要走 OpenAI /chat/completions 端点
+/// 海外模型（Claude/GPT/Gemini/JoyAI）走 Anthropic /messages 端点
+fn is_joycode_openai_model(model: &str) -> bool {
+    matches!(
+        model,
+        "glm-5" | "glm-5.1" | "kimi-k2.6" | "minimax-m2.7" | "doubao-seed-2.0-pro"
+    )
 }
 
 fn rewrite_codex_responses_endpoint_to_chat(endpoint: &str) -> (String, Option<String>) {

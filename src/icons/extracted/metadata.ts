@@ -196,6 +196,13 @@ export const iconMetadata: Record<string, IconMetadata> = {
     keywords: [],
     defaultColor: "currentColor",
   },
+  joycode: {
+    name: "joycode",
+    displayName: "Joycode",
+    category: "ai-provider",
+    keywords: ["joycode", "jd", "京东"],
+    defaultColor: "#E2383A",
+  },
   huawei: {
     name: "huawei",
     displayName: "Huawei",

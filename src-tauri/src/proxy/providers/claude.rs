@@ -243,6 +243,11 @@ impl ClaudeAdapter {
             };
         }
 
+        // 检测 Joycode（优先级高，需在 CodexOAuth 之前）
+        if self.is_joycode(provider) {
+            return ProviderType::Joycode;
+        }
+
         // 检测 Codex OAuth (ChatGPT Plus/Pro)
         if self.is_codex_oauth(provider) {
             return ProviderType::CodexOAuth;
@@ -273,6 +278,30 @@ impl ClaudeAdapter {
                 return true;
             }
         }
+        false
+    }
+
+    /// 检测是否为 Joycode 供应商（京东内部 API）
+    fn is_joycode(&self, provider: &Provider) -> bool {
+        // 方式1: 检查 meta.provider_type
+        if let Some(meta) = provider.meta.as_ref() {
+            if meta.provider_type.as_deref() == Some("joycode") {
+                return true;
+            }
+        }
+
+        // 方式2: 检查 settings_config 中的 base_url（兼容旧数据的 fallback）
+        // 注意：不能调用 self.extract_base_url()，因为 extract_base_url 会调用 is_joycode 导致无限递归
+        if let Some(url) = provider
+            .settings_config
+            .pointer("/env/ANTHROPIC_BASE_URL")
+            .and_then(|v| v.as_str())
+        {
+            if url.contains("joycode-api-inner") {
+                return true;
+            }
+        }
+
         false
     }
 
@@ -449,6 +478,17 @@ impl ProviderAdapter for ClaudeAdapter {
     }
 
     fn extract_base_url(&self, provider: &Provider) -> Result<String, ProxyError> {
+        // Joycode: 从 auth.json 的 base_url 读取（最权威），回退到 env 配置
+        if self.is_joycode(provider) {
+            let auth_path = super::joycode_auth::get_joycode_auth_path_from_provider(provider);
+            if let Ok((_token, base_url)) =
+                super::joycode_auth::read_joycode_auth(auth_path.as_deref())
+            {
+                return Ok(base_url);
+            }
+            // auth.json 读取失败时回退到 env 中配置的 base_url
+        }
+
         // Codex OAuth: 强制使用 ChatGPT 后端 API 端点（忽略用户配置的 base_url）
         if self.is_codex_oauth(provider) {
             return Ok("https://chatgpt.com/backend-api/codex".to_string());
@@ -493,6 +533,21 @@ impl ProviderAdapter for ClaudeAdapter {
 
     fn extract_auth(&self, provider: &Provider) -> Option<AuthInfo> {
         let provider_type = self.provider_type(provider);
+
+        // Joycode 使用特殊的认证策略：从 ~/.joycode/auth.json 动态读取 token
+        if provider_type == ProviderType::Joycode {
+            let auth_path = super::joycode_auth::get_joycode_auth_path_from_provider(provider);
+            let result = super::joycode_auth::read_joycode_auth(auth_path.as_deref());
+            match result {
+                Ok((token, _base_url)) => {
+                    return Some(AuthInfo::new(token, AuthStrategy::JoycodeAuth));
+                }
+                Err(err) => {
+                    log::warn!("[Joycode] auth.json 读取失败: {}", err);
+                    return None;
+                }
+            }
+        }
 
         // GitHub Copilot 使用特殊的认证策略
         // 实际的 token 会在代理请求时动态获取
@@ -677,6 +732,19 @@ impl ProviderAdapter for ClaudeAdapter {
                     ),
                     (HeaderName::from_static("x-request-id"), hv(&request_id)?),
                     (HeaderName::from_static("x-agent-task-id"), hv(&request_id)?),
+                ]
+            }
+            AuthStrategy::JoycodeAuth => {
+                vec![
+                    (HeaderName::from_static("ptkey"), hv(&auth.api_key)?),
+                    (
+                        HeaderName::from_static("originator"),
+                        HeaderValue::from_static("joycode_cli"),
+                    ),
+                    (
+                        HeaderName::from_static("clientversion"),
+                        HeaderValue::from_static("0.1.16"),
+                    ),
                 ]
             }
         })

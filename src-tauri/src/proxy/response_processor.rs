@@ -227,6 +227,7 @@ pub async fn handle_streaming(
         usage_collector,
         timeout_config,
         connection_guard,
+        is_joycode_provider(&ctx.provider),
     );
 
     let body = axum::body::Body::from_stream(logged_stream);
@@ -258,6 +259,15 @@ pub async fn handle_non_streaming(
     let (mut response_headers, status, body_bytes) =
         read_decoded_body(response, ctx.tag, body_timeout).await?;
     strip_hop_by_hop_response_headers(&mut response_headers);
+
+    // Joycode 网关业务错误检测：HTTP 200 + {"code":401,...} → 转真实错误码
+    if is_joycode_provider(&ctx.provider) && status.is_success() {
+        let body_str = String::from_utf8_lossy(&body_bytes);
+        if let Some(err) = super::joycode_sse::detect_joycode_business_error(&body_str) {
+            log::warn!("[{}] Joycode 网关业务错误: {:?}", ctx.tag, err);
+            return Err(err);
+        }
+    }
 
     log::debug!(
         "[{}] 上游响应体内容: {}",
@@ -681,6 +691,7 @@ pub fn create_logged_passthrough_stream(
     usage_collector: Option<SseUsageCollector>,
     timeout_config: StreamingTimeoutConfig,
     connection_guard: Option<ActiveConnectionGuard>,
+    is_joycode: bool,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
     async_stream::stream! {
         let _conn_guard = connection_guard;
@@ -691,6 +702,12 @@ pub fn create_logged_passthrough_stream(
         let inspect_sse_events =
             collector.is_some() || log::log_enabled!(log::Level::Debug);
         let mut is_first_chunk = true;
+
+        // Joycode SSE 跨块状态：上游会把 "event: X" 和 "data: {...}" 拆成两个独立块
+        // 维护一个 "待绑定的 event 名"，拿到 data 块时合成完整事件再下发
+        let mut joycode_pending_event: Option<String> = None;
+        // Joycode 首块业务错误检测标记
+        let mut joycode_first_chunk_checked = false;
 
         // 超时配置
         let first_byte_timeout = if timeout_config.first_byte_timeout > 0 {
@@ -740,43 +757,108 @@ pub fn create_logged_passthrough_stream(
                         );
                     }
                     is_first_chunk = false;
-                    if inspect_sse_events {
+
+                    // Joycode 首块业务错误检测
+                    if is_joycode && !joycode_first_chunk_checked {
+                        joycode_first_chunk_checked = true;
+                        let chunk_str = String::from_utf8_lossy(&bytes);
+                        if let Some(err) = super::joycode_sse::detect_joycode_business_error(&chunk_str) {
+                            log::warn!("[{tag}] Joycode 流式首块业务错误: {:?}", err);
+                            yield Err(std::io::Error::other(format!("{:?}", err)));
+                            break;
+                        }
+                    }
+
+                    if is_joycode {
+                        // Joycode 网关双层 data: 包装重打包
                         crate::proxy::sse::append_utf8_safe(&mut buffer, &mut utf8_remainder, &bytes);
 
-                        // 尝试解析并记录完整的 SSE 事件
+                        let mut repackaged = String::new();
                         while let Some(event_text) = take_sse_block(&mut buffer) {
-                            if !event_text.trim().is_empty() {
-                                // 提取 data 部分；只有 usage collector 存在时才解析 JSON。
-                                for line in event_text.lines() {
-                                    if let Some(data) = strip_sse_field(line, "data") {
-                                        if data.trim() != "[DONE]" {
-                                            let collected = match &collector {
-                                                Some(c) if c.should_collect(data) => {
-                                                    match serde_json::from_str::<Value>(data) {
-                                                        Ok(json_value) => {
-                                                            c.push(json_value).await;
-                                                            true
+                            if event_text.trim().is_empty() {
+                                continue;
+                            }
+
+                            match super::joycode_sse::parse_joycode_sse_block(&event_text) {
+                                Some(super::joycode_sse::ParsedJoycodeBlock::Event { name }) => {
+                                    joycode_pending_event = Some(name);
+                                }
+                                Some(super::joycode_sse::ParsedJoycodeBlock::Data { data }) => {
+                                    // 合成标准 SSE 格式：event + data
+                                    if let Some(event_name) = joycode_pending_event.take() {
+                                        repackaged.push_str(&format!("event: {}\n", event_name));
+                                    }
+                                    let data_str = serde_json::to_string(&data).unwrap_or_default();
+                                    repackaged.push_str(&format!("data: {}\n\n", data_str));
+
+                                    // usage collector
+                                    if let Some(c) = &collector {
+                                        if c.should_collect(&data_str) {
+                                            c.push(data).await;
+                                        }
+                                    }
+                                    if log::log_enabled!(log::Level::Debug) {
+                                        log::debug!("[{tag}] <<< Joycode SSE data: {}", data_str.len());
+                                    }
+                                }
+                                Some(super::joycode_sse::ParsedJoycodeBlock::Done) => {
+                                    if let Some(event_name) = joycode_pending_event.take() {
+                                        repackaged.push_str(&format!("event: {}\n", event_name));
+                                    }
+                                    repackaged.push_str("data: [DONE]\n\n");
+                                    log::debug!("[{tag}] <<< Joycode SSE: [DONE]");
+                                }
+                                None => {
+                                    // 解析失败，原样透传
+                                    repackaged.push_str(&event_text);
+                                    repackaged.push_str("\n\n");
+                                }
+                            }
+                        }
+
+                        if !repackaged.is_empty() {
+                            yield Ok(Bytes::from(repackaged));
+                        }
+                    } else {
+                        // 标准 SSE 处理
+                        if inspect_sse_events {
+                            crate::proxy::sse::append_utf8_safe(&mut buffer, &mut utf8_remainder, &bytes);
+
+                            // 尝试解析并记录完整的 SSE 事件
+                            while let Some(event_text) = take_sse_block(&mut buffer) {
+                                if !event_text.trim().is_empty() {
+                                    // 提取 data 部分；只有 usage collector 存在时才解析 JSON。
+                                    for line in event_text.lines() {
+                                        if let Some(data) = strip_sse_field(line, "data") {
+                                            if data.trim() != "[DONE]" {
+                                                let collected = match &collector {
+                                                    Some(c) if c.should_collect(data) => {
+                                                        match serde_json::from_str::<Value>(data) {
+                                                            Ok(json_value) => {
+                                                                c.push(json_value).await;
+                                                                true
+                                                            }
+                                                            Err(_) => false,
                                                         }
-                                                        Err(_) => false,
                                                     }
+                                                    _ => false,
+                                                };
+                                                if collected {
+                                                    log::debug!("[{tag}] <<< SSE 事件: {data}");
+                                                } else {
+                                                    log::debug!("[{tag}] <<< SSE 数据: {data}");
                                                 }
-                                                _ => false,
-                                            };
-                                            if collected {
-                                                log::debug!("[{tag}] <<< SSE 事件: {data}");
                                             } else {
-                                                log::debug!("[{tag}] <<< SSE 数据: {data}");
+                                                log::debug!("[{tag}] <<< SSE: [DONE]");
                                             }
-                                        } else {
-                                            log::debug!("[{tag}] <<< SSE: [DONE]");
                                         }
                                     }
                                 }
                             }
                         }
-                    }
 
-                    yield Ok(bytes);
+                        yield Ok(bytes);
+                    }
                 }
                 Some(Err(e)) => {
                     log::error!("[{tag}] 流错误: {e}");
@@ -808,6 +890,21 @@ fn format_headers(headers: &HeaderMap) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// 检测是否为 Joycode Provider
+pub fn is_joycode_provider(provider: &crate::provider::Provider) -> bool {
+    provider
+        .meta
+        .as_ref()
+        .and_then(|m| m.provider_type.as_deref())
+        == Some("joycode")
+        || provider
+            .settings_config
+            .pointer("/env/ANTHROPIC_BASE_URL")
+            .and_then(|v| v.as_str())
+            .map(|url| url.contains("joycode-api-inner"))
+            .unwrap_or(false)
 }
 
 #[cfg(test)]
