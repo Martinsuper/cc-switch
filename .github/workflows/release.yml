@@ -206,6 +206,13 @@ jobs:
           if (cfg.bundle) {
             cfg.bundle.createUpdaterArtifacts = false;
           }
+          // Use ad-hoc signing on macOS when no Apple certificate is configured
+          if (process.env.RUNNER_OS === 'macOS') {
+            if (!cfg.bundle) cfg.bundle = {};
+            if (!cfg.bundle.macOS) cfg.bundle.macOS = {};
+            cfg.bundle.macOS.signingIdentity = '-';
+            console.log('✅ Set macOS signingIdentity to - (ad-hoc signing)');
+          }
           fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
           console.log('✅ Updater config removed from tauri.conf.json');
           "
