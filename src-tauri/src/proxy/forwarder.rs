@@ -1197,7 +1197,6 @@ impl RequestForwarder {
 
         // 转换请求体（如果需要）
         let request_body = if codex_responses_to_chat {
-
             let mut mapped_body = mapped_body;
             let restored = self
                 .codex_chat_history

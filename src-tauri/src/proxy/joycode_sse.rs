@@ -24,7 +24,6 @@ use bytes::Bytes;
 use futures::stream::{Stream, StreamExt};
 
 /// 解析后的 SSE 块
-#[derive(Debug)]
 pub enum ParsedJoycodeBlock {
     /// 事件名（如 message_start）
     Event { name: String },
@@ -32,6 +31,8 @@ pub enum ParsedJoycodeBlock {
     Data { data: serde_json::Value },
     /// 流结束标记
     Done,
+    /// Joycode 网关业务错误（HTTP 200 响应体中的 `{"code":401,...}`）
+    BusinessError { code: i32, message: String },
 }
 
 /// 解析 Joycode 网关的双层 data: 包装 SSE 块
@@ -91,9 +92,37 @@ pub fn parse_joycode_sse_block(block: &str) -> Option<ParsedJoycodeBlock> {
     }
 
     match serde_json::from_str::<serde_json::Value>(&data_str) {
-        Ok(data) => Some(ParsedJoycodeBlock::Data { data }),
+        Ok(data) => {
+            // 先检测 Joycode 网关业务错误（HTTP 200 响应体中嵌入的错误码）
+            if let Some(error) = detect_business_error_inline(&data) {
+                return Some(error);
+            }
+            Some(ParsedJoycodeBlock::Data { data })
+        }
         Err(_) => None, // 解析失败丢弃，避免污染客户端
     }
+}
+
+/// 从 SSE 数据块中检测 Joycode 网关业务错误
+fn detect_business_error_inline(data: &serde_json::Value) -> Option<ParsedJoycodeBlock> {
+    if !data.is_object() {
+        return None;
+    }
+    let code = extract_error_code(data);
+    if let Some(code) = code {
+        if code >= 400 {
+            let msg = extract_error_message(data);
+            return Some(ParsedJoycodeBlock::BusinessError {
+                code,
+                message: if msg.is_empty() {
+                    format!("上游业务错误 (code {})", code)
+                } else {
+                    msg
+                },
+            });
+        }
+    }
+    None
 }
 
 /// 检测 Joycode 网关业务错误
@@ -286,6 +315,27 @@ pub fn create_joycode_repackaged_stream(
                                     repackaged.push_str(&format!("event: {}\n", event_name));
                                 }
                                 repackaged.push_str("data: [DONE]\n\n");
+                            }
+                            Some(ParsedJoycodeBlock::BusinessError { code, message }) => {
+                                // Joycode 网关在 HTTP 200 响应中返回业务错误
+                                // 转为 Chat Completions 标准错误 SSE event，让下游
+                                // create_responses_sse_stream_from_chat 能识别并转为
+                                // Responses API 的 response.failed 事件
+                                log::warn!(
+                                    "[Joycode SSE] 网关业务错误: code={}, msg={}",
+                                    code, message
+                                );
+                                let error_json = serde_json::json!({
+                                    "error": {
+                                        "message": message,
+                                        "type": "upstream_error",
+                                        "code": code
+                                    }
+                                });
+                                repackaged.push_str(&format!(
+                                    "event: error\ndata: {}\n\n",
+                                    serde_json::to_string(&error_json).unwrap_or_default()
+                                ));
                             }
                             None => {
                                 // 解析失败，原样透传

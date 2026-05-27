@@ -183,13 +183,19 @@ const JOYCODE_MODEL_MAP: &[(&str, &str)] = &[
     ("joyai-code", "JoyAI-Code"),
 ];
 
-/// Joycode 国内模型（支持 OpenAI Chat Completions API）
-const JOYCODE_DOMESTIC_MODELS: &[&str] = &[
+/// Joycode 客户端模型 ID 列表（从 JOYCODE_MODEL_MAP 的 key 派生）
+pub const JOYCODE_MODEL_IDS: &[&str] = &[
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5",
     "glm-5",
     "glm-5.1",
+    "gpt-5.3-codex",
     "kimi-k2.6",
     "minimax-m2.7",
     "doubao-seed-2.0-pro",
+    "gemini-3-pro-preview",
     "joyai-code",
 ];
 
@@ -202,13 +208,6 @@ const JOYCODE_OVERSEAS_MODELS: &[&str] = &[
     "gpt-5.3-codex",
     "gemini-3-pro-preview",
 ];
-
-/// 判断 Joycode 模型是否为国内模型（支持 OpenAI Chat Completions）
-pub fn is_joycode_domestic_model(model: &str) -> bool {
-    let normalized = model.trim().to_ascii_lowercase();
-    JOYCODE_DOMESTIC_MODELS.iter().any(|m| *m == normalized)
-        || !JOYCODE_OVERSEAS_MODELS.iter().any(|m| *m == normalized)
-}
 
 /// 判断 Joycode 模型是否为海外模型（需要走 Anthropic 端点）
 pub fn is_joycode_overseas_model(model: &str) -> bool {

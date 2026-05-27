@@ -227,7 +227,7 @@ pub async fn handle_streaming(
         usage_collector,
         timeout_config,
         connection_guard,
-        is_joycode_provider(&ctx.provider),
+        super::providers::joycode_auth::is_joycode_provider(&ctx.provider),
     );
 
     let body = axum::body::Body::from_stream(logged_stream);
@@ -261,7 +261,7 @@ pub async fn handle_non_streaming(
     strip_hop_by_hop_response_headers(&mut response_headers);
 
     // Joycode 网关业务错误检测：HTTP 200 + {"code":401,...} → 转真实错误码
-    if is_joycode_provider(&ctx.provider) && status.is_success() {
+    if super::providers::joycode_auth::is_joycode_provider(&ctx.provider) && status.is_success() {
         let body_str = String::from_utf8_lossy(&body_bytes);
         if let Some(err) = super::joycode_sse::detect_joycode_business_error(&body_str) {
             log::warn!("[{}] Joycode 网关业务错误: {:?}", ctx.tag, err);
@@ -808,6 +808,14 @@ pub fn create_logged_passthrough_stream(
                                     repackaged.push_str("data: [DONE]\n\n");
                                     log::debug!("[{tag}] <<< Joycode SSE: [DONE]");
                                 }
+                                Some(super::joycode_sse::ParsedJoycodeBlock::BusinessError { code, message }) => {
+                                    // Joycode 网关业务错误，合成 Responses 风格错误 SSE
+                                    log::warn!("[{tag}] <<< Joycode SSE business error: code={code}, msg={message}");
+                                    let error_json = serde_json::json!({
+                                        "error": { "message": message, "type": "server_error", "code": code }
+                                    });
+                                    repackaged.push_str(&format!("data: {}\n\n", serde_json::to_string(&error_json).unwrap_or_default()));
+                                }
                                 None => {
                                     // 解析失败，原样透传
                                     repackaged.push_str(&event_text);
@@ -890,52 +898,6 @@ fn format_headers(headers: &HeaderMap) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-/// 检测是否为 Joycode Provider
-pub fn is_joycode_provider(provider: &crate::provider::Provider) -> bool {
-    // 1. meta.provider_type
-    if provider
-        .meta
-        .as_ref()
-        .and_then(|m| m.provider_type.as_deref())
-        == Some("joycode")
-    {
-        return true;
-    }
-    // 2. Claude 格式：env.ANTHROPIC_BASE_URL 包含 joycode-api-inner
-    if provider
-        .settings_config
-        .pointer("/env/ANTHROPIC_BASE_URL")
-        .and_then(|v| v.as_str())
-        .map(|url| url.contains("joycode-api-inner"))
-        .unwrap_or(false)
-    {
-        return true;
-    }
-    // 3. Codex 格式：base_url / baseURL / config TOML base_url 包含 joycode-api-inner
-    let has_joycode_base = provider
-        .settings_config
-        .get("base_url")
-        .and_then(|v| v.as_str())
-        .or_else(|| provider.settings_config.get("baseURL").and_then(|v| v.as_str()))
-        .map(|url| url.contains("joycode-api-inner"))
-        .unwrap_or(false)
-        || provider
-            .settings_config
-            .get("config")
-            .and_then(|v| v.as_str())
-            .and_then(|s| {
-                if let Some(start) = s.find("base_url = \"") {
-                    let rest = &s[start + 12..];
-                    rest.find('"').map(|end| rest[..end].to_string())
-                } else {
-                    None
-                }
-            })
-            .map(|url| url.contains("joycode-api-inner"))
-            .unwrap_or(false);
-    has_joycode_base
 }
 
 #[cfg(test)]

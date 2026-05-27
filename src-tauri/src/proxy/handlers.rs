@@ -76,27 +76,13 @@ pub async fn handle_models(
 
     let is_joycode = providers
         .first()
-        .map(|p| super::providers::codex::is_joycode_codex_provider(p))
+        .map(|p| super::providers::joycode_auth::is_joycode_provider(p))
         .unwrap_or(false);
 
-    // Joycode 已知的模型列表（与 model_mapper.rs 中的 JOYCODE_MODEL_MAP 保持一致）
-    let joycode_models = [
-        "glm-5",
-        "glm-5.1",
-        "claude-opus-4-7",
-        "claude-opus-4-6",
-        "claude-sonnet-4-6",
-        "gpt-5.3-codex",
-        "kimi-k2.6",
-        "minimax-m2.7",
-        "doubao-seed-2.0-pro",
-        "gemini-3-pro-preview",
-        "joyai-code",
-    ];
-
+    // Joycode 模型列表来自 model_mapper 单一数据源
     let models: Vec<Value> = if is_joycode {
         // Joycode provider：返回全部已知模型
-        joycode_models
+        super::model_mapper::JOYCODE_MODEL_IDS
             .iter()
             .map(|id| {
                 json!({
@@ -368,7 +354,7 @@ async fn handle_claude_transform(
     if use_streaming {
         // 根据 api_format 选择流式转换器
         let stream = response.bytes_stream();
-        let is_joycode = super::response_processor::is_joycode_provider(&ctx.provider);
+        let is_joycode = super::providers::joycode_auth::is_joycode_provider(&ctx.provider);
         let sse_stream: Box<
             dyn futures::Stream<Item = Result<Bytes, std::io::Error>> + Send + Unpin,
         > = if api_format == "openai_responses" {
@@ -471,7 +457,7 @@ async fn handle_claude_transform(
         read_decoded_body(response, ctx.tag, body_timeout).await?;
 
     // Joycode 网关业务错误检测：HTTP 200 + {"code":401,...}
-    let is_joycode = super::response_processor::is_joycode_provider(&ctx.provider);
+    let is_joycode = super::providers::joycode_auth::is_joycode_provider(&ctx.provider);
     if is_joycode && status.is_success() {
         let check_str = String::from_utf8_lossy(&body_bytes);
         if let Some(err) = super::joycode_sse::detect_joycode_business_error(&check_str) {
@@ -807,6 +793,8 @@ async fn handle_codex_chat_to_responses_transform(
 ) -> Result<axum::response::Response, ProxyError> {
     let status = response.status();
 
+    let is_joycode = super::providers::joycode_auth::is_joycode_provider(&ctx.provider);
+
     if !status.is_success() {
         // 上游 Chat 错误体形状与 Responses 不一致（如 MiniMax 的 base_resp、自定义 detail 字段）；
         // 直接透传会让 Codex 客户端无法识别错误码。这里统一转换为 Responses 风格
@@ -817,7 +805,6 @@ async fn handle_codex_chat_to_responses_transform(
     if is_stream || response.is_sse() {
         let stream = response.bytes_stream();
         // Joycode 网关双层 data: 包装需要先重打包为标准 SSE，再做 Chat→Responses 转换
-        let is_joycode = super::response_processor::is_joycode_provider(&ctx.provider);
         let sse_stream: Box<
             dyn futures::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send + Unpin,
         > = if is_joycode {
@@ -905,7 +892,6 @@ async fn handle_codex_chat_to_responses_transform(
         read_decoded_body(response, ctx.tag, body_timeout).await?;
 
     // Joycode 网关业务错误检测：HTTP 200 + {"code":401,...}
-    let is_joycode = super::response_processor::is_joycode_provider(&ctx.provider);
     if is_joycode && status.is_success() {
         let check_str = String::from_utf8_lossy(&body_bytes);
         if let Some(err) = super::joycode_sse::detect_joycode_business_error(&check_str) {
