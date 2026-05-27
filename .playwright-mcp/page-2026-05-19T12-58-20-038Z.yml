@@ -1,0 +1,119 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - heading "Token 用量看板" [level=1] [ref=e4]
+    - generic [ref=e5]:
+      - combobox [ref=e6] [cursor=pointer]:
+        - option "今日"
+        - option "本周" [selected]
+        - option "本月"
+        - option "自定义"
+      - button "查询" [ref=e7] [cursor=pointer]
+      - button "☀️" [ref=e8] [cursor=pointer]
+  - generic [ref=e9]:
+    - generic [ref=e10]:
+      - generic [ref=e11]: 总 Token
+      - generic [ref=e12]: 84.03M
+      - generic [ref=e13]: 2026-05-18~2026-05-24
+    - generic [ref=e14]:
+      - generic [ref=e15]: 输入 Token
+      - generic [ref=e16]: 83.77M
+      - generic [ref=e17]: 缓存写入 0
+    - generic [ref=e18]:
+      - generic [ref=e19]: 输出 Token
+      - generic [ref=e20]: 264.0K
+      - generic [ref=e21]: 缓存读取 0
+    - generic [ref=e22]:
+      - generic [ref=e23]: 请求数
+      - generic [ref=e24]: 1.4K
+    - generic [ref=e25]:
+      - generic [ref=e26]: 缓存命中率
+      - generic [ref=e27]: 0%
+    - generic [ref=e28]:
+      - generic [ref=e29]: 预估费用
+      - generic [ref=e30]: $0
+  - generic [ref=e31]:
+    - heading "每日趋势" [level=2] [ref=e32]
+    - generic [ref=e33]:
+      - generic [ref=e34]: 输入
+      - generic [ref=e35]: 输出
+    - generic [ref=e37]:
+      - generic [ref=e42]: 05-18
+      - generic [ref=e47]: 05-19
+  - generic [ref=e48]:
+    - heading "模型排名" [level=2] [ref=e49]
+    - table [ref=e50]:
+      - rowgroup [ref=e51]:
+        - row "模型 用量占比 总 Token 输入 输出 请求数 预估费用" [ref=e52]:
+          - columnheader "模型" [ref=e53]
+          - columnheader "用量占比" [ref=e54]
+          - columnheader "总 Token" [ref=e55]
+          - columnheader "输入" [ref=e56]
+          - columnheader "输出" [ref=e57]
+          - columnheader "请求数" [ref=e58]
+          - columnheader "预估费用" [ref=e59]
+      - rowgroup [ref=e60]:
+        - row "glm-5.1 83.90M 83.64M 260.0K 1264 $0" [ref=e61]:
+          - cell "glm-5.1" [ref=e62]
+          - cell [ref=e63]
+          - cell "83.90M" [ref=e66]
+          - cell "83.64M" [ref=e67]
+          - cell "260.0K" [ref=e68]
+          - cell "1264" [ref=e69]
+          - cell "$0" [ref=e70]
+        - row "kimi-k2.6 130.1K 126.2K 3.9K 138 $0" [ref=e71]:
+          - cell "kimi-k2.6" [ref=e72]
+          - cell [ref=e73]
+          - cell "130.1K" [ref=e76]
+          - cell "126.2K" [ref=e77]
+          - cell "3.9K" [ref=e78]
+          - cell "138" [ref=e79]
+          - cell "$0" [ref=e80]
+        - row "glm-5 41 10 31 1 $0" [ref=e81]:
+          - cell "glm-5" [ref=e82]
+          - cell [ref=e83]
+          - cell "41" [ref=e85]
+          - cell "10" [ref=e86]
+          - cell "31" [ref=e87]
+          - cell "1" [ref=e88]
+          - cell "$0" [ref=e89]
+  - generic [ref=e90]:
+    - heading "模型明细" [level=2] [ref=e91]
+    - table [ref=e92]:
+      - rowgroup [ref=e93]:
+        - row "模型 输入 Token 输出 Token 缓存写入 缓存读取 请求数 缓存命中率 费用" [ref=e94]:
+          - columnheader "模型" [ref=e95]
+          - columnheader "输入 Token" [ref=e96]
+          - columnheader "输出 Token" [ref=e97]
+          - columnheader "缓存写入" [ref=e98]
+          - columnheader "缓存读取" [ref=e99]
+          - columnheader "请求数" [ref=e100]
+          - columnheader "缓存命中率" [ref=e101]
+          - columnheader "费用" [ref=e102]
+      - rowgroup [ref=e103]:
+        - row "glm-5.1 83.64M 260.0K 0 0 1264 - $0" [ref=e104]:
+          - cell "glm-5.1" [ref=e105]
+          - cell "83.64M" [ref=e106]
+          - cell "260.0K" [ref=e107]
+          - cell "0" [ref=e108]
+          - cell "0" [ref=e109]
+          - cell "1264" [ref=e110]
+          - cell "-" [ref=e111]
+          - cell "$0" [ref=e112]
+        - row "kimi-k2.6 126.2K 3.9K 0 0 138 - $0" [ref=e113]:
+          - cell "kimi-k2.6" [ref=e114]
+          - cell "126.2K" [ref=e115]
+          - cell "3.9K" [ref=e116]
+          - cell "0" [ref=e117]
+          - cell "0" [ref=e118]
+          - cell "138" [ref=e119]
+          - cell "-" [ref=e120]
+          - cell "$0" [ref=e121]
+        - row "glm-5 10 31 0 0 1 - $0" [ref=e122]:
+          - cell "glm-5" [ref=e123]
+          - cell "10" [ref=e124]
+          - cell "31" [ref=e125]
+          - cell "0" [ref=e126]
+          - cell "0" [ref=e127]
+          - cell "1" [ref=e128]
+          - cell "-" [ref=e129]
+          - cell "$0" [ref=e130]

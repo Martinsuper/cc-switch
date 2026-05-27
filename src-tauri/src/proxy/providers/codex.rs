@@ -78,7 +78,11 @@ pub fn codex_provider_uses_chat_completions(provider: &Provider) -> bool {
         .unwrap_or(false)
 }
 
-pub fn should_convert_codex_responses_to_chat(provider: &Provider, endpoint: &str, model: &str) -> bool {
+pub fn should_convert_codex_responses_to_chat(
+    provider: &Provider,
+    endpoint: &str,
+    model: &str,
+) -> bool {
     let path = endpoint
         .split_once('?')
         .map_or(endpoint, |(path, _query)| path);
@@ -512,7 +516,9 @@ impl ProviderAdapter for CodexAdapter {
         // Joycode: 从 auth.json 的 base_url 读取（最权威），回退到配置中的 base_url
         if super::joycode_auth::is_joycode_provider(provider) {
             let auth_path = super::joycode_auth::get_joycode_auth_path_from_provider(provider);
-            if let Ok((_token, base_url)) = super::joycode_auth::read_joycode_auth(auth_path.as_deref()) {
+            if let Ok((_token, base_url)) =
+                super::joycode_auth::read_joycode_auth(auth_path.as_deref())
+            {
                 // Joycode 国内模型端点：base_url + /api/saas/openai/v1
                 let joycode_base = base_url.trim_end_matches('/');
                 let endpoint = format!("{joycode_base}/api/saas/openai/v1");
@@ -627,18 +633,26 @@ impl ProviderAdapter for CodexAdapter {
         use super::adapter::auth_header_value;
 
         match auth.strategy {
-            AuthStrategy::JoycodeAuth => {
-                Ok(vec![
-                    (http::HeaderName::from_static("ptkey"), auth_header_value(&auth.api_key)?),
-                    (http::HeaderName::from_static("originator"), http::HeaderValue::from_static("joycode_cli")),
-                    (http::HeaderName::from_static("clientversion"), http::HeaderValue::from_static("0.1.16")),
-                ])
-            }
+            AuthStrategy::JoycodeAuth => Ok(vec![
+                (
+                    http::HeaderName::from_static("ptkey"),
+                    auth_header_value(&auth.api_key)?,
+                ),
+                (
+                    http::HeaderName::from_static("originator"),
+                    http::HeaderValue::from_static("joycode_cli"),
+                ),
+                (
+                    http::HeaderName::from_static("clientversion"),
+                    http::HeaderValue::from_static("0.1.16"),
+                ),
+            ]),
             _ => {
                 let bearer = format!("Bearer {}", auth.api_key);
-                Ok(vec![
-                    (http::HeaderName::from_static("authorization"), auth_header_value(&bearer)?),
-                ])
+                Ok(vec![(
+                    http::HeaderName::from_static("authorization"),
+                    auth_header_value(&bearer)?,
+                )])
             }
         }
     }

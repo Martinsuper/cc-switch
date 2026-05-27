@@ -1140,7 +1140,11 @@ impl RequestForwarder {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         let codex_responses_to_chat = matches!(app_type, AppType::Codex)
-            && super::providers::should_convert_codex_responses_to_chat(provider, endpoint, model_for_codex_check);
+            && super::providers::should_convert_codex_responses_to_chat(
+                provider,
+                endpoint,
+                model_for_codex_check,
+            );
         let (effective_endpoint, passthrough_query) = if codex_responses_to_chat {
             rewrite_codex_responses_endpoint_to_chat(endpoint)
         } else if is_joycode && needs_transform && adapter.name() == "Claude" {
@@ -1214,7 +1218,8 @@ impl RequestForwarder {
                 mapped_body,
                 reasoning_config.as_ref(),
             )?
-        } else if is_joycode && matches!(app_type, AppType::Codex)
+        } else if is_joycode
+            && matches!(app_type, AppType::Codex)
             && super::model_mapper::is_joycode_overseas_model(model_for_codex_check)
         {
             // Joycode 海外模型 + Codex Responses API → 转为 Anthropic Messages 格式

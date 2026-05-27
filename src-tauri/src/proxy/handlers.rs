@@ -65,9 +65,7 @@ pub async fn health_check() -> (StatusCode, Json<Value>) {
 ///    "Model metadata for `<model>` not found. Defaulting to fallback metadata"
 ///
 /// 此端点返回当前配置模型 + Joycode 全部可用模型，让 Codex 能匹配到元数据。
-pub async fn handle_models(
-    State(state): State<ProxyState>,
-) -> Result<Json<Value>, ProxyError> {
+pub async fn handle_models(State(state): State<ProxyState>) -> Result<Json<Value>, ProxyError> {
     let providers = state
         .provider_router
         .select_providers("codex")
@@ -107,7 +105,12 @@ pub async fn handle_models(
                     .and_then(|l| l.split('=').nth(1))
                     .map(|v| v.trim().trim_matches('"').trim_matches('\''))
             })
-            .or_else(|| provider.settings_config.get("model").and_then(|v| v.as_str()))
+            .or_else(|| {
+                provider
+                    .settings_config
+                    .get("model")
+                    .and_then(|v| v.as_str())
+            })
             .unwrap_or("gpt-5.4");
 
         vec![json!({
@@ -659,7 +662,11 @@ pub async fn handle_responses(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let model_for_codex = body.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let model_for_codex = body
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let forwarder = ctx.create_forwarder(&state);
     let mut result = match forwarder
         .forward_with_retry(
@@ -687,7 +694,11 @@ pub async fn handle_responses(
     ctx.provider = result.provider;
     let response = result.response;
 
-    if super::providers::should_convert_codex_responses_to_chat(&ctx.provider, &endpoint, &model_for_codex) {
+    if super::providers::should_convert_codex_responses_to_chat(
+        &ctx.provider,
+        &endpoint,
+        &model_for_codex,
+    ) {
         return handle_codex_chat_to_responses_transform(
             response,
             &ctx,
@@ -735,7 +746,11 @@ pub async fn handle_responses_compact(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let model_for_codex = body.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let model_for_codex = body
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let forwarder = ctx.create_forwarder(&state);
     let mut result = match forwarder
         .forward_with_retry(
@@ -763,7 +778,11 @@ pub async fn handle_responses_compact(
     ctx.provider = result.provider;
     let response = result.response;
 
-    if super::providers::should_convert_codex_responses_to_chat(&ctx.provider, &endpoint, &model_for_codex) {
+    if super::providers::should_convert_codex_responses_to_chat(
+        &ctx.provider,
+        &endpoint,
+        &model_for_codex,
+    ) {
         return handle_codex_chat_to_responses_transform(
             response,
             &ctx,

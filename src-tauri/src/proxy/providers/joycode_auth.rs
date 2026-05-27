@@ -43,7 +43,12 @@ pub fn is_joycode_provider(provider: &Provider) -> bool {
         .settings_config
         .get("base_url")
         .and_then(|v| v.as_str())
-        .or_else(|| provider.settings_config.get("baseURL").and_then(|v| v.as_str()))
+        .or_else(|| {
+            provider
+                .settings_config
+                .get("baseURL")
+                .and_then(|v| v.as_str())
+        })
         .map(|url| url.contains("joycode-api-inner"))
         .unwrap_or(false)
         || provider
@@ -62,7 +67,6 @@ pub fn is_joycode_provider(provider: &Provider) -> bool {
             .unwrap_or(false);
     has_joycode_base
 }
-
 
 /// Joycode auth.json 的缓存条目
 struct AuthCache {
