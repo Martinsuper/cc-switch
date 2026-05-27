@@ -24,6 +24,7 @@ use bytes::Bytes;
 use futures::stream::{Stream, StreamExt};
 
 /// 解析后的 SSE 块
+#[derive(Debug)]
 pub enum ParsedJoycodeBlock {
     /// 事件名（如 message_start）
     Event { name: String },

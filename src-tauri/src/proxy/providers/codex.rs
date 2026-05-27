@@ -869,7 +869,8 @@ wire_api = "chat"
 
         assert!(should_convert_codex_responses_to_chat(
             &provider,
-            "/v1/responses"
+            "/v1/responses",
+            "gpt-5.4"
         ));
     }
 
