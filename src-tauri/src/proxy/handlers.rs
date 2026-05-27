@@ -74,7 +74,7 @@ pub async fn handle_models(State(state): State<ProxyState>) -> Result<Json<Value
 
     let is_joycode = providers
         .first()
-        .map(|p| super::providers::joycode_auth::is_joycode_provider(p))
+        .map(super::providers::joycode_auth::is_joycode_provider)
         .unwrap_or(false);
 
     // Joycode 模型列表来自 model_mapper 单一数据源
