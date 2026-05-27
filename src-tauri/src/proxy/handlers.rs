@@ -55,6 +55,95 @@ pub async fn health_check() -> (StatusCode, Json<Value>) {
     )
 }
 
+/// OpenAI /v1/models 端点（Codex CLI 健康检查可达性探测 + 模型元数据匹配）
+///
+/// Codex 在启动时会：
+/// 1. 探测 `base_url + /models` 是否返回 200（可达性检查）
+/// 2. 从返回列表中匹配 `model` 配置项对应的 id，获取模型元数据
+///    如果匹配不到，则使用 fallback metadata 并打印警告：
+///    "Model metadata for `<model>` not found. Defaulting to fallback metadata"
+///
+/// 此端点返回当前配置模型 + Joycode 全部可用模型，让 Codex 能匹配到元数据。
+pub async fn handle_models(
+    State(state): State<ProxyState>,
+) -> Result<Json<Value>, ProxyError> {
+    let providers = state
+        .provider_router
+        .select_providers("codex")
+        .await
+        .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
+
+    let is_joycode = providers
+        .first()
+        .map(|p| super::providers::codex::is_joycode_codex_provider(p))
+        .unwrap_or(false);
+
+    // Joycode 已知的模型列表（与 model_mapper.rs 中的 JOYCODE_MODEL_MAP 保持一致）
+    let joycode_models = [
+        "glm-5",
+        "glm-5.1",
+        "claude-opus-4-7",
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
+        "gpt-5.3-codex",
+        "kimi-k2.6",
+        "minimax-m2.7",
+        "doubao-seed-2.0-pro",
+        "gemini-3-pro-preview",
+        "joyai-code",
+    ];
+
+    let models: Vec<Value> = if is_joycode {
+        // Joycode provider：返回全部已知模型
+        joycode_models
+            .iter()
+            .map(|id| {
+                json!({
+                    "id": id,
+                    "object": "model",
+                    "created": 1706745938,
+                    "owned_by": "joycode"
+                })
+            })
+            .collect()
+    } else if let Some(provider) = providers.first() {
+        let model_name = provider
+            .settings_config
+            .get("config")
+            .and_then(|v| v.as_str())
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| {
+                        let trimmed = l.trim();
+                        trimmed.starts_with("model = ") || trimmed.starts_with("model=")
+                    })
+                    .and_then(|l| l.split('=').nth(1))
+                    .map(|v| v.trim().trim_matches('"').trim_matches('\''))
+            })
+            .or_else(|| provider.settings_config.get("model").and_then(|v| v.as_str()))
+            .unwrap_or("gpt-5.4");
+
+        vec![json!({
+            "id": model_name,
+            "object": "model",
+            "created": 1706745938,
+            "owned_by": "cc-switch"
+        })]
+    } else {
+        vec![json!({
+            "id": "gpt-5.4",
+            "object": "model",
+            "created": 1706745938,
+            "owned_by": "cc-switch"
+        })]
+    };
+
+    Ok(Json(json!({
+        "object": "list",
+        "data": models
+    })))
+}
+
 /// 获取服务状态
 pub async fn get_status(State(state): State<ProxyState>) -> Result<Json<ProxyStatus>, ProxyError> {
     let status = state.status.read().await.clone();
@@ -578,6 +667,7 @@ pub async fn handle_responses(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
+    let model_for_codex = body.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let forwarder = ctx.create_forwarder(&state);
     let mut result = match forwarder
         .forward_with_retry(
@@ -605,7 +695,7 @@ pub async fn handle_responses(
     ctx.provider = result.provider;
     let response = result.response;
 
-    if super::providers::should_convert_codex_responses_to_chat(&ctx.provider, &endpoint) {
+    if super::providers::should_convert_codex_responses_to_chat(&ctx.provider, &endpoint, &model_for_codex) {
         return handle_codex_chat_to_responses_transform(
             response,
             &ctx,
@@ -653,6 +743,7 @@ pub async fn handle_responses_compact(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
+    let model_for_codex = body.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let forwarder = ctx.create_forwarder(&state);
     let mut result = match forwarder
         .forward_with_retry(
@@ -680,7 +771,7 @@ pub async fn handle_responses_compact(
     ctx.provider = result.provider;
     let response = result.response;
 
-    if super::providers::should_convert_codex_responses_to_chat(&ctx.provider, &endpoint) {
+    if super::providers::should_convert_codex_responses_to_chat(&ctx.provider, &endpoint, &model_for_codex) {
         return handle_codex_chat_to_responses_transform(
             response,
             &ctx,
@@ -717,7 +808,16 @@ async fn handle_codex_chat_to_responses_transform(
 
     if is_stream || response.is_sse() {
         let stream = response.bytes_stream();
-        let sse_stream = create_responses_sse_stream_from_chat(stream);
+        // Joycode 网关双层 data: 包装需要先重打包为标准 SSE，再做 Chat→Responses 转换
+        let is_joycode = super::response_processor::is_joycode_provider(&ctx.provider);
+        let sse_stream: Box<
+            dyn futures::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send + Unpin,
+        > = if is_joycode {
+            let repackaged = super::joycode_sse::create_joycode_repackaged_stream(stream);
+            Box::new(Box::pin(create_responses_sse_stream_from_chat(repackaged)))
+        } else {
+            Box::new(Box::pin(create_responses_sse_stream_from_chat(stream)))
+        };
 
         let usage_collector = if usage_logging_enabled(state) {
             let state = state.clone();
@@ -794,6 +894,17 @@ async fn handle_codex_chat_to_responses_transform(
         };
     let (mut response_headers, status, body_bytes) =
         read_decoded_body(response, ctx.tag, body_timeout).await?;
+
+    // Joycode 网关业务错误检测：HTTP 200 + {"code":401,...}
+    let is_joycode = super::response_processor::is_joycode_provider(&ctx.provider);
+    if is_joycode && status.is_success() {
+        let check_str = String::from_utf8_lossy(&body_bytes);
+        if let Some(err) = super::joycode_sse::detect_joycode_business_error(&check_str) {
+            log::warn!("[{}] Joycode 网关非流式业务错误: {:?}", ctx.tag, err);
+            return Err(err);
+        }
+    }
+
     let body_str = String::from_utf8_lossy(&body_bytes);
     let chat_response: Value = serde_json::from_slice(&body_bytes).map_err(|e| {
         log::error!("[Codex] 解析 Chat 上游响应失败: {e}, body: {body_str}");

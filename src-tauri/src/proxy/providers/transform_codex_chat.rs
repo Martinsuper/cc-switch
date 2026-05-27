@@ -204,13 +204,18 @@ fn flush_pending_tool_calls(messages: &mut Vec<Value>, pending_tool_calls: &mut 
 
 fn responses_message_item_to_chat_message(item: &Value) -> Value {
     let role = item.get("role").and_then(|v| v.as_str()).unwrap_or("user");
+    // Map Responses API "developer" role to "system" for Chat Completions compatibility
+    let effective_role = match role {
+        "developer" => "system",
+        other => other,
+    };
     let content = item
         .get("content")
-        .map(|value| responses_content_to_chat_content(role, value))
+        .map(|value| responses_content_to_chat_content(effective_role, value))
         .unwrap_or(Value::Null);
 
     json!({
-        "role": role,
+        "role": effective_role,
         "content": content
     })
 }

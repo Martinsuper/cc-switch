@@ -1132,8 +1132,12 @@ impl RequestForwarder {
             Some(api_format) => super::providers::claude_api_format_needs_transform(api_format),
             None => adapter.needs_transform(provider),
         };
+        let model_for_codex_check = mapped_body
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let codex_responses_to_chat = matches!(app_type, AppType::Codex)
-            && super::providers::should_convert_codex_responses_to_chat(provider, endpoint);
+            && super::providers::should_convert_codex_responses_to_chat(provider, endpoint, model_for_codex_check);
         let (effective_endpoint, passthrough_query) = if codex_responses_to_chat {
             rewrite_codex_responses_endpoint_to_chat(endpoint)
         } else if is_joycode && needs_transform && adapter.name() == "Claude" {
@@ -1191,6 +1195,11 @@ impl RequestForwarder {
         // 转换请求体（如果需要）
         let request_body = if codex_responses_to_chat {
             super::providers::transform_codex_chat::responses_to_chat_completions(mapped_body)?
+        } else if is_joycode && matches!(app_type, AppType::Codex)
+            && super::model_mapper::is_joycode_overseas_model(model_for_codex_check)
+        {
+            // Joycode 海外模型 + Codex Responses API → 转为 Anthropic Messages 格式
+            super::providers::transform_responses::responses_to_anthropic(mapped_body)?
         } else if needs_transform {
             if adapter.name() == "Claude" {
                 let api_format = resolved_claude_api_format
@@ -1221,6 +1230,18 @@ impl RequestForwarder {
         } else {
             filtered_body
         };
+
+        // Joycode/Codex 转换后的请求体调试日志（INFO 级别，便于排查上游拒绝问题）
+        if is_joycode && codex_responses_to_chat {
+            if let Ok(body_str) = serde_json::to_string(&filtered_body) {
+                log::info!(
+                    "[Joycode/Codex] 转换后请求体 ({}字节): {}",
+                    body_str.len(),
+                    body_str
+                );
+            }
+        }
+
         log_prompt_cache_trace(
             app_type,
             provider,

@@ -520,4 +520,26 @@ base_url = "https://cc-api.pipellm.ai/v1"`,
     endpointCandidates: ["https://api.therouter.ai/v1"],
     category: "aggregator",
   },
+  {
+    name: "Joycode (JD Internal)",
+    nameKey: "providers.joycode.name",
+    websiteUrl: "https://joycode.jd.com",
+    auth: {
+      OPENAI_API_KEY: "",
+    },
+    config: `model_provider = "joycode"
+model = "glm-5"
+model_reasoning_effort = "high"
+disable_response_storage = true
+
+[model_providers.joycode]
+name = "Joycode"
+base_url = "https://joycode-api-inner.jd.com/api/saas/openai/v1"
+wire_api = "chat"
+requires_openai_auth = false`,
+    category: "cn_official",
+    apiFormat: "openai_chat",
+    icon: "joycode",
+    iconColor: "#E2383A",
+  },
 ];

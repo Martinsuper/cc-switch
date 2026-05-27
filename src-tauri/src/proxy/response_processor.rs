@@ -894,17 +894,48 @@ fn format_headers(headers: &HeaderMap) -> String {
 
 /// 检测是否为 Joycode Provider
 pub fn is_joycode_provider(provider: &crate::provider::Provider) -> bool {
-    provider
+    // 1. meta.provider_type
+    if provider
         .meta
         .as_ref()
         .and_then(|m| m.provider_type.as_deref())
         == Some("joycode")
+    {
+        return true;
+    }
+    // 2. Claude 格式：env.ANTHROPIC_BASE_URL 包含 joycode-api-inner
+    if provider
+        .settings_config
+        .pointer("/env/ANTHROPIC_BASE_URL")
+        .and_then(|v| v.as_str())
+        .map(|url| url.contains("joycode-api-inner"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    // 3. Codex 格式：base_url / baseURL / config TOML base_url 包含 joycode-api-inner
+    let has_joycode_base = provider
+        .settings_config
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .or_else(|| provider.settings_config.get("baseURL").and_then(|v| v.as_str()))
+        .map(|url| url.contains("joycode-api-inner"))
+        .unwrap_or(false)
         || provider
             .settings_config
-            .pointer("/env/ANTHROPIC_BASE_URL")
+            .get("config")
             .and_then(|v| v.as_str())
+            .and_then(|s| {
+                if let Some(start) = s.find("base_url = \"") {
+                    let rest = &s[start + 12..];
+                    rest.find('"').map(|end| rest[..end].to_string())
+                } else {
+                    None
+                }
+            })
             .map(|url| url.contains("joycode-api-inner"))
-            .unwrap_or(false)
+            .unwrap_or(false);
+    has_joycode_base
 }
 
 #[cfg(test)]

@@ -183,6 +183,39 @@ const JOYCODE_MODEL_MAP: &[(&str, &str)] = &[
     ("joyai-code", "JoyAI-Code"),
 ];
 
+/// Joycode 国内模型（支持 OpenAI Chat Completions API）
+const JOYCODE_DOMESTIC_MODELS: &[&str] = &[
+    "glm-5",
+    "glm-5.1",
+    "kimi-k2.6",
+    "minimax-m2.7",
+    "doubao-seed-2.0-pro",
+    "joyai-code",
+];
+
+/// Joycode 海外模型（需要走 Anthropic/原生端点，不支持 Chat Completions）
+const JOYCODE_OVERSEAS_MODELS: &[&str] = &[
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5",
+    "gpt-5.3-codex",
+    "gemini-3-pro-preview",
+];
+
+/// 判断 Joycode 模型是否为国内模型（支持 OpenAI Chat Completions）
+pub fn is_joycode_domestic_model(model: &str) -> bool {
+    let normalized = model.trim().to_ascii_lowercase();
+    JOYCODE_DOMESTIC_MODELS.iter().any(|m| *m == normalized)
+        || !JOYCODE_OVERSEAS_MODELS.iter().any(|m| *m == normalized)
+}
+
+/// 判断 Joycode 模型是否为海外模型（需要走 Anthropic 端点）
+pub fn is_joycode_overseas_model(model: &str) -> bool {
+    let normalized = model.trim().to_ascii_lowercase();
+    JOYCODE_OVERSEAS_MODELS.iter().any(|m| *m == normalized)
+}
+
 /// 映射 Joycode 模型名为上游格式
 pub fn map_joycode_model_name(model: &str) -> &str {
     JOYCODE_MODEL_MAP

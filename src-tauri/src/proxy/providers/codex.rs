@@ -1,6 +1,6 @@
 //! Codex (OpenAI) Provider Adapter
 //!
-//! 仅透传模式，支持直连 OpenAI API
+//! 透传模式 + Joycode 国内模型 Chat Completions 转换
 //!
 //! ## 客户端检测
 //! 支持检测官方 Codex 客户端 (codex_vscode, codex_cli_rs)
@@ -11,6 +11,34 @@ use crate::proxy::error::ProxyError;
 use regex::Regex;
 use std::sync::LazyLock;
 use toml::Value as TomlValue;
+
+/// 检测是否为 Joycode Provider（支持 Codex 配置格式）
+pub fn is_joycode_codex_provider(provider: &Provider) -> bool {
+    // 1. meta.provider_type
+    if let Some(meta) = provider.meta.as_ref() {
+        if meta.provider_type.as_deref() == Some("joycode") {
+            return true;
+        }
+    }
+
+    // 2. base_url / config TOML base_url 包含 joycode-api-inner
+    let has_joycode_base = provider
+        .settings_config
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .or_else(|| provider.settings_config.get("baseURL").and_then(|v| v.as_str()))
+        .map(|u| u.contains("joycode-api-inner"))
+        .unwrap_or(false)
+        || provider
+            .settings_config
+            .get("config")
+            .and_then(|v| v.as_str())
+            .and_then(extract_codex_base_url_from_toml)
+            .map(|u| u.contains("joycode-api-inner"))
+            .unwrap_or(false);
+
+    has_joycode_base
+}
 
 /// 官方 Codex 客户端 User-Agent 正则
 #[allow(dead_code)]
@@ -24,6 +52,11 @@ pub struct CodexAdapter;
 /// OpenAI Chat Completions, even if the local Codex client is talking to CC
 /// Switch through the Responses API.
 pub fn codex_provider_uses_chat_completions(provider: &Provider) -> bool {
+    // Joycode 国内模型强制使用 Chat Completions
+    if is_joycode_codex_provider(provider) {
+        return true;
+    }
+
     if let Some(api_format) = provider
         .meta
         .as_ref()
@@ -71,15 +104,26 @@ pub fn codex_provider_uses_chat_completions(provider: &Provider) -> bool {
         .unwrap_or(false)
 }
 
-pub fn should_convert_codex_responses_to_chat(provider: &Provider, endpoint: &str) -> bool {
+pub fn should_convert_codex_responses_to_chat(provider: &Provider, endpoint: &str, model: &str) -> bool {
     let path = endpoint
         .split_once('?')
         .map_or(endpoint, |(path, _query)| path);
 
-    matches!(
+    if !matches!(
         path,
         "/responses" | "/v1/responses" | "/responses/compact" | "/v1/responses/compact"
-    ) && codex_provider_uses_chat_completions(provider)
+    ) {
+        return false;
+    }
+
+    // Joycode 海外模型（Claude/GPT 等）不走 Chat Completions 转换
+    if is_joycode_codex_provider(provider)
+        && super::super::model_mapper::is_joycode_overseas_model(model)
+    {
+        return false;
+    }
+
+    codex_provider_uses_chat_completions(provider)
 }
 
 fn is_chat_wire_api(value: &str) -> bool {
@@ -205,6 +249,19 @@ impl ProviderAdapter for CodexAdapter {
     }
 
     fn extract_base_url(&self, provider: &Provider) -> Result<String, ProxyError> {
+        // Joycode: 从 auth.json 的 base_url 读取（最权威），回退到配置中的 base_url
+        if is_joycode_codex_provider(provider) {
+            let auth_path = super::joycode_auth::get_joycode_auth_path_from_provider(provider);
+            if let Ok((_token, base_url)) = super::joycode_auth::read_joycode_auth(auth_path.as_deref()) {
+                // Joycode 国内模型端点：base_url + /api/saas/openai/v1
+                let joycode_base = base_url.trim_end_matches('/');
+                let endpoint = format!("{joycode_base}/api/saas/openai/v1");
+                log::debug!("[Codex/Joycode] 上游端点: {}", endpoint);
+                return Ok(endpoint);
+            }
+            // auth.json 读取失败时回退到配置中的 base_url
+        }
+
         // 1. 尝试直接获取 base_url 字段
         if let Some(url) = provider
             .settings_config
@@ -252,6 +309,21 @@ impl ProviderAdapter for CodexAdapter {
     }
 
     fn extract_auth(&self, provider: &Provider) -> Option<AuthInfo> {
+        // Joycode: 从 ~/.joycode/auth.json 动态读取 ptKey token
+        if is_joycode_codex_provider(provider) {
+            let auth_path = super::joycode_auth::get_joycode_auth_path_from_provider(provider);
+            let result = super::joycode_auth::read_joycode_auth(auth_path.as_deref());
+            match result {
+                Ok((token, _base_url)) => {
+                    return Some(AuthInfo::new(token, AuthStrategy::JoycodeAuth));
+                }
+                Err(err) => {
+                    log::warn!("[Codex/Joycode] auth.json 读取失败: {}", err);
+                    return None;
+                }
+            }
+        }
+
         self.extract_key(provider)
             .map(|key| AuthInfo::new(key, AuthStrategy::Bearer))
     }
@@ -298,11 +370,22 @@ impl ProviderAdapter for CodexAdapter {
         auth: &AuthInfo,
     ) -> Result<Vec<(http::HeaderName, http::HeaderValue)>, ProxyError> {
         use super::adapter::auth_header_value;
-        let bearer = format!("Bearer {}", auth.api_key);
-        Ok(vec![(
-            http::HeaderName::from_static("authorization"),
-            auth_header_value(&bearer)?,
-        )])
+
+        match auth.strategy {
+            AuthStrategy::JoycodeAuth => {
+                Ok(vec![
+                    (http::HeaderName::from_static("ptkey"), auth_header_value(&auth.api_key)?),
+                    (http::HeaderName::from_static("originator"), http::HeaderValue::from_static("joycode_cli")),
+                    (http::HeaderName::from_static("clientversion"), http::HeaderValue::from_static("0.1.16")),
+                ])
+            }
+            _ => {
+                let bearer = format!("Bearer {}", auth.api_key);
+                Ok(vec![
+                    (http::HeaderName::from_static("authorization"), auth_header_value(&bearer)?),
+                ])
+            }
+        }
     }
 }
 
@@ -444,11 +527,13 @@ wire_api = "chat"
         assert!(codex_provider_uses_chat_completions(&provider));
         assert!(should_convert_codex_responses_to_chat(
             &provider,
-            "/responses?stream=true"
+            "/responses?stream=true",
+            "gpt-5.4"
         ));
         assert!(!should_convert_codex_responses_to_chat(
             &provider,
-            "/chat/completions"
+            "/chat/completions",
+            "gpt-5.4"
         ));
     }
 
@@ -461,7 +546,8 @@ wire_api = "chat"
         assert!(codex_provider_uses_chat_completions(&provider));
         assert!(should_convert_codex_responses_to_chat(
             &provider,
-            "/v1/responses/compact"
+            "/v1/responses/compact",
+            "gpt-5.4"
         ));
     }
 
@@ -478,7 +564,8 @@ wire_api = "chat"
         assert!(codex_provider_uses_chat_completions(&provider));
         assert!(should_convert_codex_responses_to_chat(
             &provider,
-            "/responses/compact?stream=true"
+            "/responses/compact?stream=true",
+            "gpt-5.4"
         ));
     }
 }
