@@ -73,6 +73,10 @@ pub fn parse_joycode_sse_block(block: &str) -> Option<ParsedJoycodeBlock> {
             data_lines.push(stripped);
         } else if l == "[DONE]" {
             return Some(ParsedJoycodeBlock::Done);
+        } else if !l.is_empty() {
+            // 非双层包装的标准 SSE：剥完外层 data: 后是裸 JSON，
+            // 直接作为 data 收集（兼容 Joycode 网关直接返回错误 JSON 的场景）
+            data_lines.push(l);
         }
     }
 
@@ -462,5 +466,55 @@ mod tests {
         let err = map_business_error(1050, "quota exhausted");
         let msg = format!("{:?}", err);
         assert!(msg.contains("拒绝访问"));
+    }
+
+    /// 端到端测试：Joycode 双层 SSE 包装中的业务错误 → repackaged →
+    /// create_responses_sse_stream_from_chat → response.failed
+    #[tokio::test]
+    async fn test_joycode_business_error_end_to_end_produces_response_failed() {
+        use crate::proxy::providers::streaming_codex_chat::create_responses_sse_stream_from_chat;
+        use bytes::Bytes;
+        use futures::stream::{self, StreamExt};
+
+        // Simulate Joycode gateway returning a business error in double-layer SSE format
+        // data: {"code":500,"msg":"模型服务调用失败"}\n\n
+        let joycode_sse = "data: {\"code\":500,\"msg\":\"模型服务调用失败\"}\n\n";
+
+        let chunks: Vec<Result<Bytes, std::io::Error>> = vec![Ok(Bytes::from(joycode_sse))];
+        let upstream = stream::iter(chunks);
+
+        // Step 1: Repackage Joycode double-layer SSE
+        let repackaged = create_joycode_repackaged_stream(upstream);
+        let repackaged_bytes: Vec<Bytes> = repackaged.map(|item| item.unwrap()).collect().await;
+        let repackaged_output = String::from_utf8(repackaged_bytes.concat()).unwrap();
+        eprintln!("REPACKAGED: {repackaged_output}");
+
+        // Verify repackaged stream produces event: error
+        assert!(
+            repackaged_output.contains("event: error"),
+            "Repackaged stream should contain 'event: error', got: {repackaged_output}"
+        );
+
+        // Step 2: Now test the full pipeline
+        let chunks2: Vec<Result<Bytes, std::io::Error>> = vec![Ok(Bytes::from(joycode_sse))];
+        let upstream2 = stream::iter(chunks2);
+        let repackaged2 = create_joycode_repackaged_stream(upstream2);
+        let converted = create_responses_sse_stream_from_chat(repackaged2);
+        let bytes: Vec<Bytes> = converted.map(|item| item.unwrap()).collect().await;
+        let output = String::from_utf8(bytes.concat()).unwrap();
+
+        // Must contain response.failed (not response.completed)
+        assert!(
+            output.contains("event: response.failed"),
+            "Expected response.failed but got: {output}"
+        );
+        assert!(
+            output.contains("模型服务调用失败"),
+            "Expected error message in output: {output}"
+        );
+        assert!(
+            !output.contains("event: response.completed"),
+            "Should NOT contain response.completed: {output}"
+        );
     }
 }
