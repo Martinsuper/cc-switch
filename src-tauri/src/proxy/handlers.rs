@@ -686,6 +686,17 @@ pub async fn handle_responses(
                 ctx.provider = provider;
             }
             log_forward_error(&state, &ctx, is_stream, &err.error);
+            // 当 Codex 请求流式响应时，转发失败必须以 SSE 流返回
+            // response.failed，否则 Codex 报 "stream disconnected"
+            if is_stream
+                && super::providers::should_convert_codex_responses_to_chat(
+                    &ctx.provider,
+                    &endpoint,
+                    &model_for_codex,
+                )
+            {
+                return Ok(proxy_error_to_responses_sse_stream(&err.error, None));
+            }
             return Err(err.error);
         }
     };
@@ -770,6 +781,15 @@ pub async fn handle_responses_compact(
                 ctx.provider = provider;
             }
             log_forward_error(&state, &ctx, is_stream, &err.error);
+            if is_stream
+                && super::providers::should_convert_codex_responses_to_chat(
+                    &ctx.provider,
+                    &endpoint,
+                    &model_for_codex,
+                )
+            {
+                return Ok(proxy_error_to_responses_sse_stream(&err.error, None));
+            }
             return Err(err.error);
         }
     };
@@ -818,6 +838,13 @@ async fn handle_codex_chat_to_responses_transform(
         // 上游 Chat 错误体形状与 Responses 不一致（如 MiniMax 的 base_resp、自定义 detail 字段）；
         // 直接透传会让 Codex 客户端无法识别错误码。这里统一转换为 Responses 风格
         // `{"error": {message, type, code, param}}`，保留原始 HTTP 状态码。
+        //
+        // 关键：当客户端请求了流式响应 (is_stream=true)，必须以 SSE 流返回
+        // response.failed 事件，否则 Codex 会报 "stream disconnected"。
+        if is_stream {
+            return handle_codex_chat_error_as_sse_stream(response, ctx, status, connection_guard)
+                .await;
+        }
         return handle_codex_chat_error_response(response, ctx, status).await;
     }
 
@@ -900,7 +927,7 @@ async fn handle_codex_chat_to_responses_transform(
         return Ok((headers, body).into_response());
     }
 
-    let _connection_guard = connection_guard;
+    // Non-streaming path: connection_guard lives for the rest of this scope
     let body_timeout =
         if ctx.app_config.auto_failover_enabled && ctx.app_config.non_streaming_timeout > 0 {
             std::time::Duration::from_secs(ctx.app_config.non_streaming_timeout as u64)
@@ -915,9 +942,16 @@ async fn handle_codex_chat_to_responses_transform(
         let check_str = String::from_utf8_lossy(&body_bytes);
         if let Some(err) = super::joycode_sse::detect_joycode_business_error(&check_str) {
             log::warn!("[{}] Joycode 网关非流式业务错误: {:?}", ctx.tag, err);
+            // 当客户端请求流式响应时，业务错误也必须以 SSE 流返回 response.failed
+            if is_stream {
+                let _connection_guard = connection_guard;
+                return Ok(proxy_error_to_responses_sse_stream(&err, None));
+            }
             return Err(err);
         }
     }
+
+    let _connection_guard = connection_guard;
 
     let body_str = String::from_utf8_lossy(&body_bytes);
     let chat_response: Value = serde_json::from_slice(&body_bytes).map_err(|e| {
@@ -1058,6 +1092,142 @@ async fn handle_codex_chat_error_response(
         log::error!("[Codex] 构建 Responses 错误响应失败: {e}");
         ProxyError::Internal(format!("Failed to build response: {e}"))
     })
+}
+
+/// 将上游 Chat Completions 的错误响应转换为 SSE 流式的 `response.failed` 事件。
+///
+/// 当客户端请求流式响应 (is_stream=true) 时，若上游返回 HTTP 错误，
+/// 直接返回非流式 JSON 会让 Codex 报 "stream disconnected"。
+/// 此函数读取上游错误体，转换为 Responses API 格式的 SSE 事件流。
+async fn handle_codex_chat_error_as_sse_stream(
+    response: super::hyper_client::ProxyResponse,
+    ctx: &RequestContext,
+    status: axum::http::StatusCode,
+    connection_guard: Option<ActiveConnectionGuard>,
+) -> Result<axum::response::Response, ProxyError> {
+    let body_timeout =
+        if ctx.app_config.auto_failover_enabled && ctx.app_config.non_streaming_timeout > 0 {
+            std::time::Duration::from_secs(ctx.app_config.non_streaming_timeout as u64)
+        } else {
+            std::time::Duration::ZERO
+        };
+    let (_response_headers, _status, body_bytes) =
+        read_decoded_body(response, ctx.tag, body_timeout).await?;
+
+    let parsed_value: Value = match serde_json::from_slice::<Value>(&body_bytes) {
+        Ok(value) => value,
+        Err(_) => {
+            let lossy = String::from_utf8_lossy(&body_bytes);
+            let truncated = if lossy.len() > 1024 { &lossy[..1024.min(lossy.len())] } else { &lossy }.to_string();
+            Value::String(truncated)
+        }
+    };
+
+    let responses_error = transform_codex_chat::chat_error_to_response_error(Some(&parsed_value));
+    let error_message = responses_error
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("上游错误")
+        .to_string();
+    let _error_type = responses_error
+        .get("error")
+        .and_then(|e| e.get("type"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    log::warn!(
+        "[{}] Codex Chat 上游错误 (HTTP {}), 以 SSE response.failed 返回: {}",
+        ctx.tag,
+        status,
+        error_message
+    );
+
+    let proxy_error = ProxyError::UpstreamError {
+        status: status.as_u16(),
+        body: Some(error_message.clone()),
+    };
+    Ok(proxy_error_to_responses_sse_stream(&proxy_error, connection_guard))
+}
+
+/// 将 ProxyError 转换为包含 `response.failed` 事件的 SSE 流。
+///
+/// 用于所有 Codex 流式请求的错误路径，确保 Codex 收到合法的 SSE 事件流
+/// 而不是非流式 JSON 错误（后者会导致 "stream disconnected"）。
+fn proxy_error_to_responses_sse_stream(
+    error: &ProxyError,
+    connection_guard: Option<ActiveConnectionGuard>,
+) -> axum::response::Response {
+    let error_message = match error {
+        ProxyError::UpstreamError { body, .. } => {
+            body.clone().unwrap_or_else(|| error.to_string())
+        }
+        _ => error.to_string(),
+    };
+    let error_code = match error {
+        ProxyError::UpstreamError { status, .. } => format!("upstream_error_{}", status),
+        ProxyError::AuthError(_) => "authentication_error".to_string(),
+        ProxyError::Timeout(_) | ProxyError::StreamIdleTimeout(_) => "timeout".to_string(),
+        _ => "proxy_error".to_string(),
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let response_id = format!("resp_err_{}", now);
+
+    let failed_event = format!(
+        "event: response.created\ndata: {}\n\nevent: response.failed\ndata: {}\n\n",
+        serde_json::to_string(&serde_json::json!({
+            "type": "response.created",
+            "response": {
+                "id": &response_id,
+                "object": "response",
+                "created_at": now,
+                "status": "failed",
+                "output": [],
+                "usage": { "input_tokens": 0, "output_tokens": 0, "total_tokens": 0 }
+            }
+        })).unwrap_or_default(),
+        serde_json::to_string(&serde_json::json!({
+            "type": "response.failed",
+            "response": {
+                "id": &response_id,
+                "object": "response",
+                "created_at": now,
+                "status": "failed",
+                "output": [],
+                "usage": { "input_tokens": 0, "output_tokens": 0, "total_tokens": 0 },
+                "error": {
+                    "message": error_message,
+                    "type": error_code,
+                    "code": error_code
+                }
+            }
+        })).unwrap_or_default(),
+    );
+
+    let bytes_stream = futures::stream::once(async move {
+        Ok::<_, std::io::Error>(bytes::Bytes::from(failed_event))
+    });
+
+    // connection_guard 在函数 scope 内 drop，计数归零。
+    // 这是可接受的：错误 SSE 流是瞬时完成的，活跃连接计数仅用于 UI 展示。
+    let _connection_guard = connection_guard;
+
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        "Content-Type",
+        axum::http::HeaderValue::from_static("text/event-stream"),
+    );
+    headers.insert(
+        "Cache-Control",
+        axum::http::HeaderValue::from_static("no-cache"),
+    );
+
+    let body = axum::body::Body::from_stream(bytes_stream);
+    (headers, body).into_response()
 }
 
 // ============================================================================
@@ -1396,5 +1566,47 @@ data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"upstr
 data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\"}}\n\n";
 
         assert!(responses_sse_to_response_value(sse).is_err());
+    }
+
+    #[tokio::test]
+    async fn proxy_error_to_responses_sse_stream_emits_failed_event() {
+        use super::proxy_error_to_responses_sse_stream;
+        use http_body_util::BodyExt;
+
+        let error = ProxyError::UpstreamError {
+            status: 500,
+            body: Some("模型服务调用失败".to_string()),
+        };
+        let response = proxy_error_to_responses_sse_stream(&error, None);
+
+        // Verify it's an SSE response
+        assert_eq!(response.status(), 200);
+        let body = response.into_body();
+        let bytes = body.collect().await.unwrap().to_bytes();
+        let output = String::from_utf8(bytes.to_vec()).unwrap();
+
+        // Must contain response.created and response.failed events
+        assert!(output.contains("event: response.created"));
+        assert!(output.contains("event: response.failed"));
+        assert!(output.contains("模型服务调用失败"));
+        assert!(output.contains("upstream_error_500"));
+        // Must NOT contain response.completed
+        assert!(!output.contains("event: response.completed"));
+    }
+
+    #[tokio::test]
+    async fn proxy_error_auth_error_emits_failed_with_auth_code() {
+        use super::proxy_error_to_responses_sse_stream;
+        use http_body_util::BodyExt;
+
+        let error = ProxyError::AuthError("token expired".to_string());
+        let response = proxy_error_to_responses_sse_stream(&error, None);
+        let body = response.into_body();
+        let bytes = body.collect().await.unwrap().to_bytes();
+        let output = String::from_utf8(bytes.to_vec()).unwrap();
+
+        assert!(output.contains("event: response.failed"));
+        assert!(output.contains("authentication_error"));
+        assert!(output.contains("token expired"));
     }
 }
