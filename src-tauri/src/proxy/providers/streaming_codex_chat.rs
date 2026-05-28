@@ -513,6 +513,37 @@ impl ChatToResponsesState {
         events.extend(self.finalize_text());
         events.extend(self.finalize_tools());
 
+        // Empty output detection: if the upstream returned no content at all
+        // (no text, no tool calls, no finish_reason), the response is incomplete.
+        // Emit response.failed so Codex retries instead of "stream disconnected".
+        let has_output = !self.output_items.is_empty();
+        if !has_output && self.finish_reason.is_none() {
+            self.completed = true;
+            events.push(sse_event(
+                "response.failed",
+                json!({
+                    "type": "response.failed",
+                    "response": {
+                        "id": self.response_id,
+                        "object": "response",
+                        "created_at": self.created_at,
+                        "status": "failed",
+                        "model": self.model,
+                        "output": [],
+                        "usage": self.latest_usage.clone().unwrap_or_else(|| json!({
+                            "input_tokens": 0, "output_tokens": 0, "total_tokens": 0
+                        })),
+                        "error": {
+                            "message": "上游返回空响应，模型服务未生成任何内容",
+                            "type": "upstream_error",
+                            "code": "empty_response"
+                        }
+                    }
+                }),
+            ));
+            return events;
+        }
+
         let status = response_status_from_finish_reason(self.finish_reason.as_deref());
         let mut response = self.base_response(status, self.completed_output_items());
         if status == "incomplete" {
@@ -810,6 +841,9 @@ fn leading_think_prefix_decision(buffer: &str) -> ThinkPrefixDecision {
 }
 
 /// Create a stream that converts Chat Completions SSE chunks into Responses SSE events.
+///
+/// Detects empty upstream responses (no output chunks received) and emits a
+/// `response.failed` event so Codex retries instead of "stream disconnected".
 pub fn create_responses_sse_stream_from_chat<E: std::error::Error + Send + 'static>(
     stream: impl Stream<Item = Result<Bytes, E>> + Send + 'static,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
@@ -818,6 +852,7 @@ pub fn create_responses_sse_stream_from_chat<E: std::error::Error + Send + 'stat
         let mut utf8_remainder: Vec<u8> = Vec::new();
         let mut state = ChatToResponsesState::default();
         let mut stream_failed = false;
+        let mut received_any_data_chunk = false;
 
         tokio::pin!(stream);
 
@@ -866,6 +901,11 @@ pub fn create_responses_sse_stream_from_chat<E: std::error::Error + Send + 'stat
                             break;
                         }
 
+                        // Track whether we received any chunk with actual content
+                        if chunk.get("choices").and_then(|v| v.as_array()).is_some() {
+                            received_any_data_chunk = true;
+                        }
+
                         for event in state.handle_chat_chunk(&chunk) {
                             yield Ok(event);
                         }
@@ -887,8 +927,17 @@ pub fn create_responses_sse_stream_from_chat<E: std::error::Error + Send + 'stat
         }
 
         if !stream_failed {
-            for event in state.finalize() {
-                yield Ok(event);
+            if !received_any_data_chunk && !state.response_started {
+                // Upstream returned an empty SSE stream (no data chunks at all)
+                log::warn!("[Codex Chat→Responses] 上游返回空 SSE 流，生成 response.failed");
+                yield Ok(state.failed_event(
+                    "上游返回空响应，模型服务未生成任何内容".to_string(),
+                    Some("upstream_error".to_string()),
+                ));
+            } else {
+                for event in state.finalize() {
+                    yield Ok(event);
+                }
             }
         }
     }
@@ -1078,5 +1127,74 @@ mod tests {
         assert!(output.contains("quota exceeded"));
         assert!(output.contains("rate_limit_exceeded"));
         assert!(!output.contains("event: response.completed"));
+    }
+
+    #[tokio::test]
+    async fn empty_upstream_stream_emits_failed() {
+        // Upstream closes without sending any SSE data at all
+        let upstream = stream::iter(Vec::<Result<Bytes, std::io::Error>>::new());
+        let converted = create_responses_sse_stream_from_chat(upstream);
+        let bytes: Vec<Bytes> = converted.map(|item| item.unwrap()).collect().await;
+        let output = String::from_utf8(bytes.concat()).unwrap();
+
+        assert!(output.contains("event: response.failed"));
+        assert!(output.contains("upstream_error"));
+        assert!(output.contains("空响应"));
+        assert!(!output.contains("event: response.completed"));
+    }
+
+    #[tokio::test]
+    async fn empty_sse_stream_with_no_choices_emits_failed() {
+        // Upstream sends SSE blocks but none contain choices with content
+        let output = collect(vec![
+            "data: {\"id\":\"chatcmpl_empty\",\"model\":\"glm-5.1\"}\n\n",
+            "data: [DONE]\n\n",
+        ])
+        .await;
+
+        // finalize() detects empty output_items and no finish_reason → response.failed
+        assert!(output.contains("event: response.failed"));
+        assert!(output.contains("upstream_error"));
+        assert!(!output.contains("event: response.completed"));
+    }
+
+    #[tokio::test]
+    async fn chat_chunk_with_choices_but_no_content_emits_failed() {
+        // Upstream sends a chunk with an empty choices array (no delta content)
+        let output = collect(vec![
+            "data: {\"id\":\"chatcmpl_1\",\"model\":\"glm-5.1\",\"choices\":[]}\n\n",
+            "data: [DONE]\n\n",
+        ])
+        .await;
+
+        assert!(output.contains("event: response.failed"));
+        assert!(!output.contains("event: response.completed"));
+    }
+
+    #[tokio::test]
+    async fn chat_with_only_usage_no_content_emits_failed() {
+        // Upstream returns usage but no actual content
+        let output = collect(vec![
+            "data: {\"id\":\"chatcmpl_1\",\"model\":\"glm-5.1\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":0,\"total_tokens\":10}}\n\n",
+            "data: [DONE]\n\n",
+        ])
+        .await;
+
+        assert!(output.contains("event: response.failed"));
+        assert!(!output.contains("event: response.completed"));
+    }
+
+    #[tokio::test]
+    async fn normal_response_with_finish_reason_emits_completed_not_failed() {
+        // Ensure normal responses still emit response.completed
+        let output = collect(vec![
+            "data: {\"id\":\"chatcmpl_1\",\"model\":\"glm-5.1\",\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n",
+            "data: {\"id\":\"chatcmpl_1\",\"model\":\"glm-5.1\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n",
+        ])
+        .await;
+
+        assert!(output.contains("event: response.completed"));
+        assert!(!output.contains("event: response.failed"));
     }
 }
